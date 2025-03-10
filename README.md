@@ -3,4 +3,4 @@ A repository aimed at the development of the cubing engine that combines biodive
 
 ## Notes  
 
-Any theoretical notes and documentation that goes into depth of the utilized data sources and principles of data harmonization can be found within the (Notes)[https://github.com/nbillietPM/Notes] repository 
+Any theoretical notes and documentation that goes into depth of the utilized data sources and principles of data harmonization can be found within the [Notes](https://github.com/nbillietPM/Notes) repository 
