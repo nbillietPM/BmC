@@ -37,7 +37,8 @@ def fetch_taxon_info(inp_file, inp_path="",
                      keep_higherrank=False):
     """
     A function that reads in a list of species names and than retrieves all the relevant information from
-    the GBIF taxonomic backbone. 
+    the GBIF taxonomic backbone. The dataframe containing all the taxonomic data is than formatted to store the taxonKey that is used for the most general
+    name within the column 'acceptedUsageKey'.
 
     Args:
         inp_file (str): The name for the file containing all the species names
@@ -79,8 +80,11 @@ def fetch_taxon_info(inp_file, inp_path="",
         warning_msg += ") resulted in 'NONE' or 'HIGHERRANK' type match. Potential reasons can be found in the mismatch_df under the key 'note'"
         print(warning_msg)
     #Assert that usageKeys are cast as integers
-    taxonomic_df["usageKey"] = taxonomic_df[key].astype(int)
+    taxonomic_df["acceptedUsageKey"].fillna(taxonomic_df["usageKey"], inplace=True)
+    taxonomic_df["acceptedUsageKey"] = taxonomic_df["acceptedUsageKey"].astype(int)
     #If an out_file is specified than the taxonomic info will be written to a file of said name
     if out_file != "":
         taxonomic_df.to_csv(os.path.join(out_path, out_file), index=False)
+    if mismatch_file != "":
+        mismatch_df[["matchType", "note", "scientificName", "lookupNames"]].to_csv(os.path.join(out_path, mismatch_file), index=False)
     return taxonomic_df, mismatch_df
