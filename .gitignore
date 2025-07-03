@@ -1,8 +1,9 @@
 data/
-!scripts/prototype/inp
 *~
 *.tif
 *.nc
 *.png
 *.csv
 *.zip
+!scripts/prototype/inp/prototypeNames.csv
+!scripts/prototype/img/AOI.png
