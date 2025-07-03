@@ -33,9 +33,8 @@ def read_species_names(inpFile, inpPath="", sep=","):
 
 def fetch_taxon_info(inp_file, inp_path="", out_file="", out_path="", sep=",", mismatch_file= "", keep_higherrank=False):
     """
-    A function that reads in a list of species names and than retrieves all the relevant information from
-    the GBIF taxonomic backbone. The dataframe containing all the taxonomic data is than formatted to store the taxonKey that is used for the most general
-    name within the column 'acceptedUsageKey'.
+    A function that reads in a list of species names and than retrieves all the relevant information from the GBIF taxonomic backbone. 
+    The dataframe containing all the taxonomic data is than formatted to store the taxonKey that is used for the most general name within the column 'acceptedUsageKey'.
 
     Args:
         inp_file (str): The name for the file containing all the species names
@@ -78,6 +77,7 @@ def fetch_taxon_info(inp_file, inp_path="", out_file="", out_path="", sep=",", m
         print(warning_msg)
     #Assert that usageKeys are cast as integers
     taxonomic_df["acceptedUsageKey"].fillna(taxonomic_df["usageKey"], inplace=True)
+    # Assure that the keys are stored and represented as integers
     taxonomic_df["acceptedUsageKey"] = taxonomic_df["acceptedUsageKey"].astype(int)
     #If an out_file is specified than the taxonomic info will be written to a file of said name
     if out_file != "":
@@ -85,6 +85,25 @@ def fetch_taxon_info(inp_file, inp_path="", out_file="", out_path="", sep=",", m
     if mismatch_file != "":
         mismatch_df[["matchType", "note", "scientificName", "lookupNames"]].to_csv(os.path.join(out_path, mismatch_file), index=False)
     return taxonomic_df, mismatch_df
+
+
+def extract_keys_dwc(inp_file, inp_path="", sep="\t", encoding="utf-8"):
+    """
+    Extract the usagekeys from a Darwin Core archive
+
+    Args
+        inp_file (str): the file containing the taxonomic information 
+        inp_path (str, optional): The path towards the darwin core taxon file. Standard value is the current working directory
+        sep (str, optional): Separator used in the inp_file. Standard separator used in the tab value 
+        encoding (str, optional): Encoding used within the file. Standard encoding is utf-8
+    Returns
+        usageKeys (list<str>): A list containing the usageKeys described within the archive. These keys are multidigit strings
+    """
+    #Read in the DwC file immediately as a DF with a tab separator and utf8 encoding
+    dwc_df = pd.read_csv(os.path.join(inp_path, inp_file), sep="\t", encoding="utf8")
+    #Extract the usageKey from the taxonID field in the dataframe
+    usageKeys = [key.split("/")[-1] for key in dwc_df["taxonID"]]
+    return usageKeys
 
 def bbox2polygon_wkt(bbox):
     """
@@ -95,9 +114,10 @@ def bbox2polygon_wkt(bbox):
     Returns
         polygon.wkt (str): The WKT representation of the bbox in polygon format 
     """
-    #Read the tuple as a rectanglur geometry
+    #Read the tuple as a rectangular geometry
     polygon = shapely.geometry.box(*bbox)
     return polygon.wkt
+
 
 def generate_json_query(usageKeys, bbox, out_file="gbif_query.json", out_path="", sendNotification='true', notificationAddress=None):
     """
