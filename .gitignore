@@ -7,3 +7,4 @@ data/
 *.zip
 !scripts/prototype/inp/prototypeNames.csv
 !scripts/prototype/img/AOI.png
+.Rproj.user
