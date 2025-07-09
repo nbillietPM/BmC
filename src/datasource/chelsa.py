@@ -1,9 +1,11 @@
 import rasterio
 from rasterio.mask import mask
+import rasterio.transform
 import rasterio.windows
 import shapely
 import geopandas as gpd
 import os
+import numpy
 
 def format_url_month_ts(var, month, year, 
                         base_url="https://os.zhdk.cloud.switch.ch/chelsav2/GLOBAL/monthly", 
@@ -30,7 +32,7 @@ def format_url_month_ts(var, month, year,
     return f"{base_url}/{var}/CHELSA_{var}_{month:02d}_{year}_{version}.tif"
 
 
-def read_bounding_box(url, bbox):
+def read_bounding_box(url, bbox, generate_coordinates=True):
     """
     A function that reads a subset defined by a bounding box from a cloud hosted tif file and returns the data within to the local user
 
@@ -46,9 +48,19 @@ def read_bounding_box(url, bbox):
         window = rasterio.windows.from_bounds(*bbox, transform=src_file.transform)
         #Read the first band of the tif file. Files are single band
         subset = src_file.read(1, window=window)
-    return subset
+    if generate_coordinates:
+        window_transform = src_file.window_transform(window)
+        #Extract subset array dimensions to determine grid dimensions
+        height, width = subset.shape
+        #Generate meshgrid to assign index to each pixel
+        rows, cols = np.meshgrid(np.arange(height), np.arange(width), indexing="ij")
+        #Generate (lat, long) pairs based on the affine transform of the window
+        longitudes, latitudes = rasterio.transform.xy(window_transform, rows, cols)
+        return longitudes.reshape(height, width), latitudes.reshape(height, width), subset
+    else:
+        return subset
 
-def read_polygon_area(url, shp_file, shp_path=""):
+def read_polygon_area(url, shp_file, shp_path="", generate_coordinates=True):
     """
     A function that reads all data contained within the boundary of a polygon defined by a shapefile
 
