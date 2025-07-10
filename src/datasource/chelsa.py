@@ -148,3 +148,28 @@ def generate_month_year_range(start_month, end_month, start_year, end_year):
             year += 1
     return datetimes
 
+def chelsa_month_ts(var, bbox, start_month, end_month, start_year, end_year):
+    """
+    return a data array in xarray 
+        - spatial dimensions described
+        - temporal dimension described
+    """
+    datetimes = generate_month_year_range(start_month, end_month, start_year, end_year)
+    urls = [format_url_month_ts(var, dt[0], dt[1]) for dt in datetimes]
+    data = [read_bounding_box(url, bbox) for url in urls]
+    # Extract first and second arrays
+    first_arrays = [item[0] for item in data]
+    second_arrays = [item[1] for item in data]
+    
+    # Check all are equal to the first one
+    first_equal = all(np.array_equal(arr, first_arrays[0]) for arr in first_arrays)
+    second_equal = all(np.array_equal(arr, second_arrays[0]) for arr in second_arrays)
+    if first_equal==second_equal:
+        var_data = [item[2] for item in  data]
+        longitudes = first_arrays[0]
+        latitudes = second_arrays[0]
+        datetimes = np.array([f"{dt[1]}-{dt[0]:02d}" for dt in datetimes], dtype='datetime64[M]')
+        dataArray = xr.DataArray(var_data, 
+                                 dims=("time", "lat", "lon"),
+                                 coords={"time":datetimes, "lat":latitudes, "lon":longitudes})
+        return dataArray
