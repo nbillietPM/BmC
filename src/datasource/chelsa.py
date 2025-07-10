@@ -9,7 +9,8 @@ import numpy
 
 def format_url_month_ts(var, month, year, 
                         base_url="https://os.zhdk.cloud.switch.ch/chelsav2/GLOBAL/monthly", 
-                        version="V.2.1"):
+                        version="V.2.1",
+                        year_range=range(1979,2020)):
     """
     Generates the link to the S3 bucket where the CHELSA monthly time series is stores
 
@@ -28,20 +29,26 @@ def format_url_month_ts(var, month, year,
         raise ValueError(f"Invalid variable name: {var}. Variable must be one of the following options {var_opt}")
     if month not in range(1,13):
         raise ValueError(f"Month invalid: {month}. Please use a number between 1 and 12")
+    if year not in year_range:
+        raise ValueError(f"Year invalid: {year}. Please use a number between {year_range[0]} and {year[-1]}")
+    #Some variables start at the second month of 1979 instead of the first one
+    diff_ts = ["cmi","pet","sfcWind", "tas", "tasmax", "tasmin", "vpd"]
+    if var in diff_ts and month==1 and year==1979:
+        return 0
     #Returns the formatted string, months are automatically converted to the correct string format where single digits have zero padding
     return f"{base_url}/{var}/CHELSA_{var}_{month:02d}_{year}_{version}.tif"
 
 
-def generate_transform_coordinates(subset, transform, format="matrix"):
+def generate_transform_coordinates(subset, transform, format="array"):
     """
     A function that generates coordinate arrays for the raster defined by the affine transform
 
     Args
         subset (np.array): A 2D numpy array that contains the raster where the relevant information is stored in
         transform (affine.Affine): The affine transformation matrix that is characteristic for the subset
-        format (str, optional): Option to output format. Standard format is matrix (2D) format, alternative is vector output.
+        format (str, optional): Option to output format. Standard format is array (1D) format, alternative is matrix output.
     Returns
-        (longitudes, latitudes) (np.array): coordinate arrays that have a similar dimension to the original subset array. Each cell is characterized by a longitude and latitude pair
+        longitudes, latitudes (np.array): coordinate arrays that have a similar dimension to the original subset array. Each cell is characterized by a longitude and latitude pair
     """
     #Extract subset array dimensions to determine grid dimensions
     height, width = subset.shape
@@ -49,10 +56,11 @@ def generate_transform_coordinates(subset, transform, format="matrix"):
     rows, cols = np.meshgrid(np.arange(height), np.arange(width), indexing="ij")
     #Generate (lat, long) pairs based on the affine transform of the window ordered according to the generated indices
     longitudes, latitudes = rasterio.transform.xy(transform, rows, cols)
-    if format=="matrix":
+    if format=="array":
+        return longitudes[0,:], latitudes[:,0]
+    elif format=="matrix":
         return longitudes.reshape(height, width), latitudes.reshape(height, width)
-    else:
-        return longitudes, latitudes
+
 
 def read_bounding_box(url, bbox, generate_coordinates=True):
     """
@@ -68,6 +76,8 @@ def read_bounding_box(url, bbox, generate_coordinates=True):
             longitude (np.ndarray): Longitude grid matching the subset shape.
             latitude (np.ndarray): Latitude grid matching the subset shape.
     """
+    if url==0:
+        return 0
     with rasterio.open(url) as src_file:
         #Define a window that will be used to sample the region of interest
         #Transform describes the affine transformation matrix that defines the raster that is being used
@@ -97,6 +107,8 @@ def read_polygon_area(url, shp_file, shp_path="", generate_coordinates=True):
             longitude (np.ndarray): Longitude grid matching the subset shape.
             latitude (np.ndarray): Latitude grid matching the subset shape.
     """
+    if url==0:
+        return 0
     #Read the shapefile 
     polygon = gpd.read_file(os.path.join(shp_path, shp_file))
     with rasterio.open(url) as src:
@@ -111,3 +123,28 @@ def read_polygon_area(url, shp_file, shp_path="", generate_coordinates=True):
         return longitudes, latitudes, subset
     else:
         return subset
+
+def generate_month_year_range(start_month, end_month, start_year, end_year):
+    """
+    Function to generate a list of month year pairs that need to be sampled
+
+    Args
+        start_month (int): The first month of the time range that needs to be included
+        end_month (int): The end month of the time range that needs to be included
+        start_year (int): The first year of the time range that needs to be included
+        end_year (int): The last month of the time range that needs to be included
+    
+    Returns
+        datetimes (list<tuple<int>>): a list consisting of (month, year) tuples  
+    """
+    datetimes = []
+    year, month = start_year, start_month
+    while (year < end_year) or (year == end_year and month <= end_month):
+        datetimes.append((month, year))
+        # Increment month/year
+        month += 1
+        if month > 12:
+            month = 1
+            year += 1
+    return datetimes
+
