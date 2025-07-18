@@ -29,13 +29,24 @@ def format_url_month_ts(var, month, year,
     #Returns the formatted string, months are automatically converted to the correct string format where single digits have zero padding
     return f"{base_url}/{var}/CHELSA_{var}_{month:02d}_{year}_{version}.tif"
 
-def format_url_clim_ref_period(var, 
+def format_url_clim_ref_period(var,
+                               ref_period = "1981-2010"
                                base_url="https://os.zhdk.cloud.switch.ch/chelsav2/GLOBAL/climatologies/1981-2010/",
                                version="V.2.1"):
     """
     Generate URL's that link to the reference data tif files for the BIOCLIM+ variables for the reference period 1980-2010
     """
-    var_opt = []
+    var_opt = var_opt = ['ai','bio10','bio11','bio12','bio13','bio14','bio15','bio16','bio17','bio18','bio19','bio1','bio2','bio3',
+                         'bio4','bio5','bio6','bio7','bio8','bio9','clt_max','clt_mean','clt_min','clt_range','cmi_max','cmi_mean',
+                         'cmi_min','cmi_range','fcf','fgd','gdd0','gdd10','gdd5','gddlgd0','gddlgd10','gddlgd5','gdgfgd0','gdgfgd10',
+                         'gdgfgd5','gsl','gsp','gst','hurs_max','hurs_mean','hurs_min','hurs_range','kg0','kg1','kg2','kg3','kg4','kg5',
+                         'lgd','ngd0','ngd10','ngd5','npp','pet_penman_max','pet_penman_mean','pet_penman_min','pet_penman_range',
+                         'rsds_max','rsds_min','rsds_mean','rsds_range','scd','sfcWind_max','sfcWind_mean','sfcWind_min','sfcWind_range',
+                         'swb','swe','vpd_max','vpd_mean','vpd_min','vpd_range']
+    if var not in var_opt:
+        raise ValueError(f"Invalid variable name: {var}. Variable must be one of the following options {var_opt}")
+    #"CHELSA_ai_1981-2010_V.2.1.tif"
+    return f"{base_url}/bio/CHELSA_{var}_{ref_period}_{version}.tif"
 
 def format_url_clim_ref_monthly(var, month,
                                 ref_period = "1981-2010"
@@ -79,6 +90,8 @@ def format_url_clim_sim_month(var, year_range, month, model_name, ensemble_membe
                               base_url="https://os.zhdk.cloud.switch.ch/chelsav2/GLOBAL/climatologies"):
     """
     generate url that link to the files in the S3 bucket that contain the future climate projections for a specific month
+
+    Currently the naming convention for the file is inconsistent with the other files and might get adjusted in the future
     """
     var_opt=["pr", "tas", "tasmax", "tasmin"]
     if var not in var_opt:
