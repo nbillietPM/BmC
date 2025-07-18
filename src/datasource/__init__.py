@@ -1,1 +1,2 @@
-from . import gbif
+from .gbif import *
+from .chelsa import *
