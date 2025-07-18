@@ -30,7 +30,7 @@ def format_url_month_ts(var, month, year,
     return f"{base_url}/{var}/CHELSA_{var}_{month:02d}_{year}_{version}.tif"
 
 def format_url_clim_ref_period(var,
-                               ref_period = "1981-2010"
+                               ref_period = "1981-2010",
                                base_url="https://os.zhdk.cloud.switch.ch/chelsav2/GLOBAL/climatologies/1981-2010/",
                                version="V.2.1"):
     """
@@ -49,7 +49,7 @@ def format_url_clim_ref_period(var,
     return f"{base_url}/bio/CHELSA_{var}_{ref_period}_{version}.tif"
 
 def format_url_clim_ref_monthly(var, month,
-                                ref_period = "1981-2010"
+                                ref_period = "1981-2010",
                                 base_url="https://os.zhdk.cloud.switch.ch/chelsav2/GLOBAL/climatologies/1981-2010/",
                                 version="V.2.1"):
     """
