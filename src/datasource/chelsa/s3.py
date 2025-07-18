@@ -29,6 +29,29 @@ def format_url_month_ts(var, month, year,
     #Returns the formatted string, months are automatically converted to the correct string format where single digits have zero padding
     return f"{base_url}/{var}/CHELSA_{var}_{month:02d}_{year}_{version}.tif"
 
+def format_url_clim_ref_period(var, 
+                               base_url="https://os.zhdk.cloud.switch.ch/chelsav2/GLOBAL/climatologies/1981-2010/",
+                               version="V.2.1"):
+    """
+    Generate URL's that link to the reference data tif files for the BIOCLIM+ variables for the reference period 1980-2010
+    """
+    var_opt = []
+
+def format_url_clim_ref_monthly(var, month,
+                                ref_period = "1981-2010"
+                                base_url="https://os.zhdk.cloud.switch.ch/chelsav2/GLOBAL/climatologies/1981-2010/",
+                                version="V.2.1"):
+    """
+    Generate URL's that link to the reference data tif files on a monthly basis for the reference period 1980-2010 
+    """
+    var_opt=["clt","cmi","hurs","ncdf","pet","pr","rsds","sfcWind","tas","tasmax","tasmin", "vpd"]
+    if var not in var_opt:
+        raise ValueError(f"Invalid variable name: {var}. Variable must be one of the following options {var_opt}")
+    if month not in range(1,13):
+        raise ValueError(f"Month invalid: {month}. Please use a number between 1 and 12")
+    return f"{base_url}/{var}/CHELSA_{var}_{month:02d}_{ref_period}_{version}.tif"
+    
+
 def format_url_clim_sim_period(var, year_range, model_name, ensemble_member, 
                                base_url="https://os.zhdk.cloud.switch.ch/chelsav2/GLOBAL/climatologies",
                                version="V.2.1"):
@@ -69,4 +92,5 @@ def format_url_clim_sim_month(var, year_range, month, model_name, ensemble_membe
     year_ranges = ["2011-2040","2041-2070","2071-2100"]
     if year_range not in year_ranges:
         raise ValueError(f"Year range invalid: {year_range} Please use on of the following year ranges {year_ranges}")
+    #Added a replace '-' with "_" to take the deviating naming structure of CHELSA into account
     return f"{base_url}/{year_range}/{model_name.upper()}/{ensemble_member.lower()}/{var.lower()}/CHELSA_{model_name.lower()}_r1i1p1f1_w5e5_{ensemble_member.lower()}_{var.lower()}_{month:02d}_{year_range.replace("-", "_")}_norm.tif"
