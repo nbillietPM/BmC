@@ -21,7 +21,7 @@ def generate_transform_coordinates(subset, transform, format="array"):
     #Generate (lat, long) pairs based on the affine transform of the window ordered according to the generated indices
     longitudes, latitudes = rasterio.transform.xy(transform, rows, cols)
     if format=="array":
-        return longitudes[0,:], latitudes[:,0]
+        return longitudes[:width], latitudes[::width]
     elif format=="matrix":
         return longitudes.reshape(height, width), latitudes.reshape(height, width)
 

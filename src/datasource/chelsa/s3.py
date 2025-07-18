@@ -31,7 +31,7 @@ def format_url_month_ts(var, month, year,
 
 def format_url_clim_ref_period(var,
                                ref_period = "1981-2010",
-                               base_url="https://os.zhdk.cloud.switch.ch/chelsav2/GLOBAL/climatologies/1981-2010/",
+                               base_url="https://os.zhdk.cloud.switch.ch/chelsav2/GLOBAL/climatologies/1981-2010",
                                version="V.2.1"):
     """
     Generate URL's that link to the reference data tif files for the BIOCLIM+ variables for the reference period 1980-2010
@@ -50,7 +50,7 @@ def format_url_clim_ref_period(var,
 
 def format_url_clim_ref_monthly(var, month,
                                 ref_period = "1981-2010",
-                                base_url="https://os.zhdk.cloud.switch.ch/chelsav2/GLOBAL/climatologies/1981-2010/",
+                                base_url="https://os.zhdk.cloud.switch.ch/chelsav2/GLOBAL/climatologies/1981-2010",
                                 version="V.2.1"):
     """
     Generate URL's that link to the reference data tif files on a monthly basis for the reference period 1980-2010 
