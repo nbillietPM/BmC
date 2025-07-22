@@ -34,7 +34,6 @@ def chech_spatial_homo(data):
     """
     longitudes_arrays = [item[0] for item in data]
     latitude_arrays = [item[1] for item in data]
-    
     # Check all are equal to the first one
     longitudes_equal = all(np.array_equal(arr, longitudes_arrays[0]) for arr in longitudes_arrays)
     latitudes_equal = all(np.array_equal(arr, latitude_arrays[0]) for arr in latitude_arrays)
@@ -51,26 +50,23 @@ def chelsa_month_ts(var, bbox, start_month, end_month, start_year, end_year):
     datetimes = generate_month_year_range(start_month, end_month, start_year, end_year)
     urls = [format_url_month_ts(var, dt[0], dt[1]) for dt in datetimes]
     data = [read_bounding_box(url, bbox) for url in urls]
+    #check spatial consistency across the different time slices
     if chech_spatial_homo(data):
-        var_data = [item[2] for item in  data]
-        longitudes = data[0][0]
-        latitudes = data[0][1]
         datetimes = np.array([f"{dt[1]}-{dt[0]:02d}" for dt in datetimes], dtype='datetime64[M]')
-        dataArray = xr.DataArray(var_data, 
-                                 dims=("time", "lat", "long"),
-                                 coords={"time":datetimes, "lat":latitudes, "long":longitudes})
+        dataArray = xr.DataArray([item[2] for item in  data], 
+                                  dims=("time", "lat", "long"),
+                                  coords={"time":datetimes, "lat":data[0][1], "long":data[0][0]})
         return var,dataArray
 
 def chelsa_clim_ref_period(var, bbox, 
                            ref_period="1981-2010"):
     url = format_url_clim_ref_period(var)
     longitudes, latitudes, data = read_bounding_box(url, bbox)
-    if chech_spatial_homo(data):
-        dataArray = xr.DataArray(data, 
-                                 dims=("lat", "long"), 
-                                 coords={"lat":latitudes,"long":longitudes})
-        dataArray.attrs["year_range"] = ref_period
-        return var,dataArray
+    dataArray = xr.DataArray(data, 
+                             dims=("lat", "long"), 
+                             coords={"lat":latitudes,"long":longitudes})
+    dataArray.attrs["year_range"] = ref_period
+    return var,dataArray
     """
     else:
         urls = [format_url_clim_ref_period(var) for var in vars]
@@ -91,14 +87,10 @@ def chelsa_clim_ref_month(var, bbox,
     months = range(begin_month, end_month+1)
     urls = [format_url_clim_ref_monthly(var, month) for month in months]
     data = [read_bounding_box(url, bbox) for url in urls]
-    if chech_spatial_homo(data):
-        var_data = [item[2] for item in  data]
-        longitudes = data[0][0]
-        latitudes = data[0][1]
-        dataArray = xr.DataArray(var_data, 
-                                 dims=("months", "lat", "long"),
-                                 coords={"months":months, "lat":latitudes, "long":longitudes})
-        return var,dataArray
+    dataArray = xr.DataArray([item[2] for item in  data], 
+                             dims=("months", "lat", "long"),
+                             coords={"months":months, "lat":data[0][1], "long":data[0][0]})
+    return var,dataArray
 
 
 #format_url_clim_sim_period
