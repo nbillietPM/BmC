@@ -1,6 +1,7 @@
 import os
 import numpy as np
 import xarray as xr
+import itertools
 from sampling import *
 from s3 import *
 
@@ -93,11 +94,8 @@ def chelsa_clim_ref_month(var, bbox,
     return var,dataArray
 
 def chelsa_clim_sim_period(var, year_ranges, model_names, ensemble_members, bbox):
-    params = [(year_range, model_name, ensemble_member) 
-              for year_range in year_ranges 
-              for model_name in model_names 
-              for ensemble_member in ensemble_members]
-    urls = [format_url_clim_sim_period(var, param[0], param[1], param[2]) for param in params]
+    params = list(itertools.product(year_ranges, model_names, ensemble_members))
+    urls = [format_url_clim_sim_period(var, *param) for param in params]
     data = [read_bounding_box(url, bbox) for url in urls]
     if chech_spatial_homo(data):
         dataArray = xr.DataArray(np.stack([item[2] for item in  data]).reshape(len(year_ranges), 
@@ -113,7 +111,22 @@ def chelsa_clim_sim_period(var, year_ranges, model_names, ensemble_members, bbox
                                           "long":data[0][0]})
         return var,dataArray
 
-#format_url_clim_sim_month
-#def chelsa_clim_sim_month():
-
-#
+def chelsa_clim_sim_month(var, year_ranges, months, model_names, ensemble_members, bbox):
+    params = list(itertools.product(year_ranges, months, model_names, ensemble_members))
+    urls = [format_url_clim_sim_month(var, *param) for param in params]
+    data = [read_bounding_box(url, bbox) for url in urls]
+    if chech_spatial_homo(data):
+        dataArray = xr.DataArray(np.stack([item[2] for item in  data]).reshape(len(year_ranges),
+                                                                               len(months), 
+                                                                               len(model_names), 
+                                                                               len(ensemble_members), 
+                                                                               len(data[0][1]), 
+                                                                               len(data[0][0])), 
+                                  dims=("year_range", "month", "model_name", "ensemble_member", "lat", "long"),
+                                  coords={"year_range":year_ranges,
+                                          "month":months,
+                                          "model_name":model_names,
+                                          "ensemble_member":ensemble_members, 
+                                          "lat":data[0][1], 
+                                          "long":data[0][0]})
+        return var,dataArray
