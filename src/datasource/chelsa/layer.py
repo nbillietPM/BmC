@@ -29,7 +29,7 @@ def generate_month_year_range(start_month, end_month, start_year, end_year):
             year += 1
     return datetimes
 
-def chech_spatial_homo(data):
+def check_spatial_homo(data):
     """
     Check if the raster that is associated with the extracted data is consistent homogenous across the different subsets
     """
@@ -44,15 +44,20 @@ def chech_spatial_homo(data):
 
 def chelsa_month_ts(var, bbox, start_month, end_month, start_year, end_year):
     """
-    return a data array in xarray 
-        - spatial dimensions described
-        - temporal dimension described
+    Generates a xarray dataArray object that collects monthly information within the specified time frame determined 
+    by a starting (month, year) and an end (month, year) for a given variable of interest. The data is associated with an area of 
+    interested characterized by the bbox
+
+    Args
+        to be continued
+    Returns
+        to be continued
     """
     datetimes = generate_month_year_range(start_month, end_month, start_year, end_year)
     urls = [format_url_month_ts(var, dt[0], dt[1]) for dt in datetimes]
     data = [read_bounding_box(url, bbox) for url in urls]
     #check spatial consistency across the different time slices
-    if chech_spatial_homo(data):
+    if check_spatial_homo(data):
         datetimes = np.array([f"{dt[1]}-{dt[0]:02d}" for dt in datetimes], dtype='datetime64[M]')
         dataArray = xr.DataArray([item[2] for item in  data], 
                                   dims=("time", "lat", "long"),
@@ -61,6 +66,15 @@ def chelsa_month_ts(var, bbox, start_month, end_month, start_year, end_year):
 
 def chelsa_clim_ref_period(var, bbox, 
                            ref_period="1981-2010"):
+    """
+    Generates a xarray dataArray object that collects the information for the reference climatological data the 
+    specified variable of interest. The data is associated with an area of interested characterized by the bbox
+
+    Args
+        to be continued
+    Returns
+        to be continued
+    """
     url = format_url_clim_ref_period(var)
     longitudes, latitudes, data = read_bounding_box(url, bbox)
     dataArray = xr.DataArray(data, 
@@ -68,36 +82,39 @@ def chelsa_clim_ref_period(var, bbox,
                              coords={"lat":latitudes,"long":longitudes})
     dataArray.attrs["year_range"] = ref_period
     return var,dataArray
-    """
-    else:
-        urls = [format_url_clim_ref_period(var) for var in vars]
-        data = [read_bounding_box(url, bbox) for url in urls]
-        if chech_spatial_homo(data):
-            clim_data = [item[2] for item in data]
-            longitudes = data[0][0]
-            latitudes = data[0][1]
-            dataset = xr.Dataset(dict(zip(vars, [(["lat", "long"], var_data) for var_data in clim_data])),
-                                 coords={"lat": lat,"lon": lon,})
-            dataset.attrs["Reference Period"] = ref_period
-            return dataset
-    """
 
 
 def chelsa_clim_ref_month(var, bbox,
-                          begin_month=1, end_month=12):
+                          begin_month=1, end_month=12,
+                          ref_period="1981-2010"):
+    """
+    Generate a xarray dataArray for reference climatological data on a monthly basis for the specified variable of interest.
+    The data is associated with an area of interested characterized by the bbox
+    """
+    #Generate a list of month numbers
     months = range(begin_month, end_month+1)
+    #Generate URL's for the given parameter combinations
     urls = [format_url_clim_ref_monthly(var, month) for month in months]
+    #Read the data for the generated URL's within the specified bbox
     data = [read_bounding_box(url, bbox) for url in urls]
-    dataArray = xr.DataArray([item[2] for item in  data], 
-                             dims=("months", "lat", "long"),
-                             coords={"months":months, "lat":data[0][1], "long":data[0][0]})
-    return var,dataArray
+    #Check spatial homogeneity condition
+    if check_spatial_homo(data):
+        dataArray = xr.DataArray([item[2] for item in  data], 
+                                dims=("months", "lat", "long"),
+                                coords={"months":months, "lat":data[0][1], "long":data[0][0]})
+        #Add metadata of the reference period to the array
+        dataArray.attrs["year_range"] = ref_period
+        return var,dataArray
 
 def chelsa_clim_sim_period(var, year_ranges, model_names, ensemble_members, bbox):
+    """
+    
+    """
+    #Generate all parameter combinations for the given 
     params = list(itertools.product(year_ranges, model_names, ensemble_members))
     urls = [format_url_clim_sim_period(var, *param) for param in params]
     data = [read_bounding_box(url, bbox) for url in urls]
-    if chech_spatial_homo(data):
+    if check_spatial_homo(data):
         dataArray = xr.DataArray(np.stack([item[2] for item in  data]).reshape(len(year_ranges), 
                                                                                len(model_names), 
                                                                                len(ensemble_members), 
@@ -115,7 +132,7 @@ def chelsa_clim_sim_month(var, year_ranges, months, model_names, ensemble_member
     params = list(itertools.product(year_ranges, months, model_names, ensemble_members))
     urls = [format_url_clim_sim_month(var, *param) for param in params]
     data = [read_bounding_box(url, bbox) for url in urls]
-    if chech_spatial_homo(data):
+    if check_spatial_homo(data):
         dataArray = xr.DataArray(np.stack([item[2] for item in  data]).reshape(len(year_ranges),
                                                                                len(months), 
                                                                                len(model_names), 
