@@ -88,8 +88,7 @@ def chelsa_clim_ref_period(var, bbox,
     return var,dataArray
 
 
-def chelsa_clim_ref_month(var, bbox,
-                          begin_month=1, end_month=12,
+def chelsa_clim_ref_month(var, bbox, months
                           ref_period="1981-2010",
                           base_url='https://os.zhdk.cloud.switch.ch/chelsav2/GLOBAL/climatologies/1981-2010',
                           version='V.2.1'):
@@ -97,8 +96,6 @@ def chelsa_clim_ref_month(var, bbox,
     Generate a xarray dataArray for reference climatological data on a monthly basis for the specified variable of interest.
     The data is associated with an area of interested characterized by the bbox
     """
-    #Generate a list of month numbers
-    months = range(begin_month, end_month+1)
     #Generate URL's for the given parameter combinations
     urls = [format_url_clim_ref_monthly(var, month, base_url=base_url, version=version)) for month in months]
     #Read the data for the generated URL's within the specified bbox
