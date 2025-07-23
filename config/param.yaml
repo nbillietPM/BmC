@@ -23,8 +23,8 @@ layers:
       included: []       # Ignored if include_all is true
       excluded: []
     source:
-      base_url: "https://data-hosting.example.com/chelsa/monthly"
-      version: "v2.1"  # Optional data version tag
+      base_url: "https://os.zhdk.cloud.switch.ch/chelsav2/GLOBAL/monthly"
+      version: "V.2.1"  # Optional data version tag
 
   chelsa_clim_ref_period:
     enabled: true
@@ -36,7 +36,7 @@ layers:
       excluded: []
     source:
       base_url: "https://os.zhdk.cloud.switch.ch/chelsav2/GLOBAL/climatologies/1981-2010"
-      version: "v2.1"
+      version: "V.2.1"
   
   chelsa_clim_ref_month:
     enabled: true

@@ -42,7 +42,9 @@ def check_spatial_homo(data):
     return longitudes_equal==latitudes_equal
 
 
-def chelsa_month_ts(var, bbox, start_month, end_month, start_year, end_year):
+def chelsa_month_ts(var, bbox, start_month, end_month, start_year, end_year,
+                    base_url='https://os.zhdk.cloud.switch.ch/chelsav2/GLOBAL/monthly',
+                    version='V.2.1'):
     """
     Generates a xarray dataArray object that collects monthly information within the specified time frame determined 
     by a starting (month, year) and an end (month, year) for a given variable of interest. The data is associated with an area of 
@@ -54,7 +56,7 @@ def chelsa_month_ts(var, bbox, start_month, end_month, start_year, end_year):
         to be continued
     """
     datetimes = generate_month_year_range(start_month, end_month, start_year, end_year)
-    urls = [format_url_month_ts(var, dt[0], dt[1]) for dt in datetimes]
+    urls = [format_url_month_ts(var, dt[0], dt[1], base_url=base_url, version=version) for dt in datetimes]
     data = [read_bounding_box(url, bbox) for url in urls]
     #check spatial consistency across the different time slices
     if check_spatial_homo(data):
@@ -65,7 +67,9 @@ def chelsa_month_ts(var, bbox, start_month, end_month, start_year, end_year):
         return var,dataArray
 
 def chelsa_clim_ref_period(var, bbox, 
-                           ref_period="1981-2010"):
+                           ref_period="1981-2010",
+                           base_url='https://os.zhdk.cloud.switch.ch/chelsav2/GLOBAL/climatologies/1981-2010',
+                           version='V.2.1'):
     """
     Generates a xarray dataArray object that collects the information for the reference climatological data the 
     specified variable of interest. The data is associated with an area of interested characterized by the bbox
@@ -75,7 +79,7 @@ def chelsa_clim_ref_period(var, bbox,
     Returns
         to be continued
     """
-    url = format_url_clim_ref_period(var)
+    url = format_url_clim_ref_period(var, base_url=base_url, version=version))
     longitudes, latitudes, data = read_bounding_box(url, bbox)
     dataArray = xr.DataArray(data, 
                              dims=("lat", "long"), 
@@ -86,7 +90,9 @@ def chelsa_clim_ref_period(var, bbox,
 
 def chelsa_clim_ref_month(var, bbox,
                           begin_month=1, end_month=12,
-                          ref_period="1981-2010"):
+                          ref_period="1981-2010",
+                          base_url='https://os.zhdk.cloud.switch.ch/chelsav2/GLOBAL/climatologies/1981-2010',
+                          version='V.2.1'):
     """
     Generate a xarray dataArray for reference climatological data on a monthly basis for the specified variable of interest.
     The data is associated with an area of interested characterized by the bbox
@@ -94,7 +100,7 @@ def chelsa_clim_ref_month(var, bbox,
     #Generate a list of month numbers
     months = range(begin_month, end_month+1)
     #Generate URL's for the given parameter combinations
-    urls = [format_url_clim_ref_monthly(var, month) for month in months]
+    urls = [format_url_clim_ref_monthly(var, month, base_url=base_url, version=version)) for month in months]
     #Read the data for the generated URL's within the specified bbox
     data = [read_bounding_box(url, bbox) for url in urls]
     #Check spatial homogeneity condition
@@ -106,14 +112,16 @@ def chelsa_clim_ref_month(var, bbox,
         dataArray.attrs["year_range"] = ref_period
         return var,dataArray
 
-def chelsa_clim_sim_period(var, year_ranges, model_names, ensemble_members, bbox):
+def chelsa_clim_sim_period(var, year_ranges, model_names, ensemble_members, bbox,
+                           base_url='https://os.zhdk.cloud.switch.ch/chelsav2/GLOBAL/climatologies',
+                           version='V.2.1'):
     """
     
     """
     #Generate all parameter combinations for the given 
     params = list(itertools.product(year_ranges, model_names, ensemble_members))
     urls = [format_url_clim_sim_period(var, *param) for param in params]
-    data = [read_bounding_box(url, bbox) for url in urls]
+    data = [read_bounding_box(url, bbox, base_url=base_url, version=version) for url in urls]
     if check_spatial_homo(data):
         dataArray = xr.DataArray(np.stack([item[2] for item in  data]).reshape(len(year_ranges), 
                                                                                len(model_names), 
@@ -128,9 +136,11 @@ def chelsa_clim_sim_period(var, year_ranges, model_names, ensemble_members, bbox
                                           "long":data[0][0]})
         return var,dataArray
 
-def chelsa_clim_sim_month(var, year_ranges, months, model_names, ensemble_members, bbox):
+def chelsa_clim_sim_month(var, year_ranges, months, model_names, ensemble_members, bbox,
+                          base_url='https://os.zhdk.cloud.switch.ch/chelsav2/GLOBAL/climatologies',
+                          version='V.2.1'):
     params = list(itertools.product(year_ranges, months, model_names, ensemble_members))
-    urls = [format_url_clim_sim_month(var, *param) for param in params]
+    urls = [format_url_clim_sim_month(var, *param, base_url=base_url, version=version) for param in params]
     data = [read_bounding_box(url, bbox) for url in urls]
     if check_spatial_homo(data):
         dataArray = xr.DataArray(np.stack([item[2] for item in  data]).reshape(len(year_ranges),
