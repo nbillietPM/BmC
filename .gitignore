@@ -5,6 +5,9 @@ data/
 *.png
 *.csv
 *.zip
+*.ipynb_checkpoints
+*__pycache__
 !scripts/prototype/inp/prototypeNames.csv
 !scripts/prototype/img/AOI.png
 .Rproj.user
+.Rhistory

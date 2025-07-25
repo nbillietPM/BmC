@@ -7,7 +7,6 @@ def construct_bbox(param_dict):
             param_dict["spatial"]["bbox"]["long_max"],
             param_dict["spatial"]["bbox"]["lat_max"])
 
-
 def filter_parameters(param_list, param_dict, layer_name, sub_layer_name, 
                       sub_sub_layer_name=""):
     if not sub_sub_layer_name:
@@ -29,7 +28,8 @@ def read_chelsa_month_param(param_file, param_path="../../../config"):
     var = ["clt", "cmi", "hurs", "pet", "pr", "rsds", "sfcWind", "tas", "tasmax", "tasmin", "vpd"]
     layer_name = "chelsa_month"
     #Construct the relative path to the parameter yaml file
-    param_filepath = os.path.join(param_path, param_file)
+    # Resolve full path
+    param_filepath = param_file if os.path.isabs(param_file) else os.path.join(param_path, param_file)
     with open(param_filepath) as f:
         param_dict = yaml.safe_load(f)
     if param_dict["spatial"]["method"]=="bbox":
@@ -80,7 +80,7 @@ def read_chelsa_clim_ref_month_param(param_file, param_path="../../../config"):
     if param_dict["spatial"]["method"]=="bbox":
         #Read in the bbox coordinates from the parameter dictionary
         bbox = construct_bbox(param_dict)
-    var = filter_parameters(var, param_dict, layer_name, "variables")$
+    var = filter_parameters(var, param_dict, layer_name, "variables")
     months = filter_parameters(list(range(1,13)), param_dict, layer_name, "time")
     chelsa_clim_ref_month_params = {"var":var, 
                                      "bbox":bbox, 

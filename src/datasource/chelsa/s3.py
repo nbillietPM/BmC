@@ -1,7 +1,7 @@
 def format_url_month_ts(var, month, year, 
                         base_url="https://os.zhdk.cloud.switch.ch/chelsav2/GLOBAL/monthly", 
                         version="V.2.1",
-                        year_range=range(1979,2020)):
+                        year_range=list(range(1979,2021))):
     """
     Generates the link to the S3 bucket where the CHELSA monthly time series is stores
 
@@ -21,14 +21,22 @@ def format_url_month_ts(var, month, year,
     if month not in range(1,13):
         raise ValueError(f"Month invalid: {month}. Please use a number between 1 and 12")
     if year not in year_range:
-        raise ValueError(f"Year invalid: {year}. Please use a number between {year_range[0]} and {year[-1]}")
+        raise ValueError(f"Year invalid: {year}. Please use a number between {year_range[0]} and {year_range[-1]}")
     #Some variables start at the second month of 1979 instead of the first one
     diff_ts = ["cmi","pet","sfcWind", "tas", "tasmax", "tasmin", "vpd"]
     if var in diff_ts and month==1 and year==1979:
         return 0
-    #Returns the formatted string, months are automatically converted to the correct string format where single digits have zero padding
-    return f"{base_url}/{var}/CHELSA_{var}_{month:02d}_{year}_{version}.tif"
-
+    
+    if var == "rsds":
+        #Naming inconsistency where year and month have switched place
+        return f"{base_url}/{var}/CHELSA_{var}_{year}_{month:02d}_{version}.tif"
+    elif var == "pet":
+        #Naming inconsistency where '_penman' is added after variable name
+        return f"{base_url}/{var}/CHELSA_{var}_penman_{month:02d}_{year}_{version}.tif"
+    else:
+        #Returns the formatted string, months are automatically converted to the correct string format where single digits have zero padding
+        return f"{base_url}/{var}/CHELSA_{var}_{month:02d}_{year}_{version}.tif"
+    
 def format_url_clim_ref_period(var,
                                ref_period = "1981-2010",
                                base_url="https://os.zhdk.cloud.switch.ch/chelsav2/GLOBAL/climatologies/1981-2010",
