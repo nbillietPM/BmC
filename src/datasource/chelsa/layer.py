@@ -83,7 +83,7 @@ def chelsa_month_ts(var, bbox, start_month, end_month, start_year, end_year,
     """
     datetimes = generate_month_year_range(start_month, end_month, start_year, end_year)
     urls = [format_url_month_ts(var, dt[0], dt[1], base_url=base_url, version=version) for dt in datetimes]
-    print(f"-----Retrieving monthly CHELSA data for variable '{var}' within bbox {bbox}-----")
+    print(f"-----Retrieving monthly CHELSA data for variable '{var}'-----")
     data = batch_process_urls(urls, bbox, datetimes)
     #check spatial consistency across the different time slices
     if check_spatial_homo(data):
@@ -91,7 +91,7 @@ def chelsa_month_ts(var, bbox, start_month, end_month, start_year, end_year,
         dataArray = xr.DataArray([item[2] for item in  data], 
                                   dims=("time", "lat", "long"),
                                   coords={"time":datetimes, "lat":data[0][1], "long":data[0][0]})
-        return var,dataArray
+        return var, dataArray
 
 def chelsa_clim_ref_period(var, bbox, 
                            ref_period="1981-2010",

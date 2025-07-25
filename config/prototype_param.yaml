@@ -15,13 +15,13 @@ layers:
     time:
       start_year: 1980
       start_month: 1
-      end_year: 1981
+      end_year: 1980
       end_month: 12
       year_range: [1979, 2020]  # Optional: for fallback or metadata only
     variables:
       include_all: true
       included: []       # Ignored if include_all is true
-      excluded: ["clt"]
+      excluded: []
     source:
       base_url: "https://os.zhdk.cloud.switch.ch/chelsav2/GLOBAL/monthly"
       version: "V.2.1"  # Optional data version tag
