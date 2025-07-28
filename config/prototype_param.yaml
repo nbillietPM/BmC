@@ -82,8 +82,8 @@ layers:
         included: []
         excluded: []
       months:
-        include_all: true 
-        included: []
+        include_all: false 
+        included: [1,2]
         excluded: []
     variables:
       include_all: true

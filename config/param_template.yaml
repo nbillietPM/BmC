@@ -160,7 +160,6 @@ layers:
           clt: "Cloud cover (%)"
           cmi: "Climatic Moisture Index"
           hurs: "Relative humidity (%)"
-          ncdf: "Normalized Climate Drought Factor"
           pet: "Potential Evapotranspiration (mm)"
           pr: "Precipitation (mm)"
           rsds: "Surface downwelling shortwave radiation (W/m²)"

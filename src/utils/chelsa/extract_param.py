@@ -71,7 +71,7 @@ def read_chelsa_clim_ref_period_param(param_file, param_path="../../../config"):
     return chelsa_clim_ref_period_params  
 
 def read_chelsa_clim_ref_month_param(param_file, param_path="../../../config"):
-    var=["clt","cmi","hurs","ncdf","pet","pr","rsds","sfcWind","tas","tasmax","tasmin", "vpd"]
+    var=["clt","cmi","hurs","pet","pr","rsds","sfcWind","tas","tasmax","tasmin", "vpd"]
     layer_name = "chelsa_clim_ref_month"
     #Construct the relative path to the parameter yaml file
     param_filepath = os.path.join(param_path, param_file)
@@ -145,4 +145,4 @@ def read_chelsa_clim_sim_month_param(param_file, param_path="../../../config"):
                                      "ensemble_members":ensemble_members,
                                      "base_url":param_dict["layers"][layer_name]["source"]["base_url"],
                                      "version":param_dict["layers"][layer_name]["source"]["version"]}
-    return chelsa_clim_ref_month_params 
+    return chelsa_clim_ref_month_params

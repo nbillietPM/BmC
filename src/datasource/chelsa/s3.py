@@ -53,8 +53,12 @@ def format_url_clim_ref_period(var,
                'swb','swe','vpd_max','vpd_mean','vpd_min','vpd_range']
     if var not in var_opt:
         raise ValueError(f"Invalid variable name: {var}. Variable must be one of the following options {var_opt}")
-    #"CHELSA_ai_1981-2010_V.2.1.tif"
-    return f"{base_url}/bio/CHELSA_{var}_{ref_period}_{version}.tif"
+    #Deviation in naming scheme
+    if "rsds" in var:
+        var_split = var.split("_")
+        return f"{base_url}/bio/CHELSA_rsds_{ref_period}_{var_split[1]}_{version}.tif"
+    else:  
+        return f"{base_url}/bio/CHELSA_{var}_{ref_period}_{version}.tif"
 
 def format_url_clim_ref_monthly(var, month,
                                 ref_period = "1981-2010",
@@ -63,12 +67,19 @@ def format_url_clim_ref_monthly(var, month,
     """
     Generate URL's that link to the reference data tif files on a monthly basis for the reference period 1980-2010 
     """
-    var_opt=["clt","cmi","hurs","ncdf","pet","pr","rsds","sfcWind","tas","tasmax","tasmin", "vpd"]
+    var_opt=["clt","cmi","hurs","pet","pr","rsds","sfcWind","tas","tasmax","tasmin", "vpd"]
     if var not in var_opt:
         raise ValueError(f"Invalid variable name: {var}. Variable must be one of the following options {var_opt}")
     if month not in range(1,13):
         raise ValueError(f"Month invalid: {month}. Please use a number between 1 and 12")
-    return f"{base_url}/{var}/CHELSA_{var}_{month:02d}_{ref_period}_{version}.tif"
+    if var == "rsds":
+        #Naming inconsistency where year and month have switched place
+        return f"{base_url}/{var}/CHELSA_{var}_{ref_period}_{month:02d}_{version}.tif"
+    if var == "pet":
+        #Naming inconsistency where '_penman' is added after variable name
+        return f"{base_url}/{var}/CHELSA_{var}_penman_{month:02d}_{ref_period}_{version}.tif"
+    else:
+        return f"{base_url}/{var}/CHELSA_{var}_{month:02d}_{ref_period}_{version}.tif"
     
 
 def format_url_clim_sim_period(var, year_range, model_name, ensemble_member, 
@@ -95,7 +106,8 @@ def format_url_clim_sim_period(var, year_range, model_name, ensemble_member,
     return f"{base_url}/{year_range}/{model_name.upper()}/{ensemble_member.lower()}/bio/CHELSA_{var.lower()}_{year_range}_{model_name.lower()}_{ensemble_member.lower()}_{version}.tif"
 
 def format_url_clim_sim_month(var, year_range, month, model_name, ensemble_member, 
-                              base_url="https://os.zhdk.cloud.switch.ch/chelsav2/GLOBAL/climatologies"):
+                              base_url="https://os.zhdk.cloud.switch.ch/chelsav2/GLOBAL/climatologies",
+                              version="V.2.1"):
     """
     generate url that link to the files in the S3 bucket that contain the future climate projections for a specific month
 

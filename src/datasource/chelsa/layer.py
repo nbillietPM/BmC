@@ -2,7 +2,7 @@ import os
 import numpy as np
 import xarray as xr
 import itertools
-import tqdm
+from tqdm import tqdm
 
 from .sampling import *
 from .s3 import *
@@ -107,7 +107,9 @@ def chelsa_clim_ref_period(var, bbox,
         to be continued
     """
     url = format_url_clim_ref_period(var, base_url=base_url, version=version)
+    print(f"-----Retrieving Reference Climatology CHELSA data for variable '{var}' in reference period {ref_period}-----")
     longitudes, latitudes, data = read_bounding_box(url, bbox)
+    print("Complete")
     dataArray = xr.DataArray(data, 
                              dims=("lat", "long"), 
                              coords={"lat":latitudes,"long":longitudes})
@@ -126,7 +128,8 @@ def chelsa_clim_ref_month(var, bbox, months,
     #Generate URL's for the given parameter combinations
     urls = [format_url_clim_ref_monthly(var, month, base_url=base_url, version=version) for month in months]
     #Read the data for the generated URL's within the specified bbox
-    data = [read_bounding_box(url, bbox) for url in urls]
+    print(f"-----Retrieving monthly Reference Climatology CHELSA data for variable '{var}' in reference period {ref_period}-----")
+    data = batch_process_urls(urls, bbox, months)
     #Check spatial homogeneity condition
     if check_spatial_homo(data):
         dataArray = xr.DataArray([item[2] for item in  data], 
@@ -145,7 +148,8 @@ def chelsa_clim_sim_period(var, bbox, year_ranges, model_names, ensemble_members
     #Generate all parameter combinations for the given 
     params = list(itertools.product(year_ranges, model_names, ensemble_members))
     urls = [format_url_clim_sim_period(var, *param) for param in params]
-    data = [read_bounding_box(url, bbox, base_url=base_url, version=version) for url in urls]
+    print(f"-----Retrieving Simulation (period) CHELSA data for variable '{var}'-----")
+    data = batch_process_urls(urls, bbox, params)
     if check_spatial_homo(data):
         dataArray = xr.DataArray(np.stack([item[2] for item in  data]).reshape(len(year_ranges), 
                                                                                len(model_names), 
@@ -165,7 +169,8 @@ def chelsa_clim_sim_month(var, bbox, year_ranges, months, model_names, ensemble_
                           version='V.2.1'):
     params = list(itertools.product(year_ranges, months, model_names, ensemble_members))
     urls = [format_url_clim_sim_month(var, *param, base_url=base_url, version=version) for param in params]
-    data = [read_bounding_box(url, bbox) for url in urls]
+    print(f"-----Retrieving Simulation (monthly) CHELSA data for variable '{var}'-----")
+    data = batch_process_urls(urls, bbox, params)
     if check_spatial_homo(data):
         dataArray = xr.DataArray(np.stack([item[2] for item in  data]).reshape(len(year_ranges),
                                                                                len(months), 
