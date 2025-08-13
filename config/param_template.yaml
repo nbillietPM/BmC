@@ -142,7 +142,8 @@ layers:
     enabled: true
     time:
       include_all: true 
-      months: []
+      included: []
+      excluded: []
       year_range: "1981-2010"
     variables:
       include_all: true

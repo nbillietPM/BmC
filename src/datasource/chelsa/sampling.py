@@ -2,6 +2,7 @@ import numpy as np
 import rasterio
 from rasterio.mask import mask
 import shapely
+from rasterio.env import Env
 
 def generate_transform_coordinates(subset, transform, format="array"):
     """
@@ -42,12 +43,13 @@ def read_bounding_box(url, bbox, generate_coordinates=True):
     """
     if url==0:
         return 0
-    with rasterio.open(url) as src_file:
-        #Define a window that will be used to sample the region of interest
-        #Transform describes the affine transformation matrix that defines the raster that is being used
-        window = rasterio.windows.from_bounds(*bbox, transform=src_file.transform)
-        #Read the first band of the tif file. Files are single band
-        subset = src_file.read(1, window=window)
+    with Env(GTIFF_SRS_SOURCE="EPSG"):
+        with rasterio.open(url) as src_file:
+            #Define a window that will be used to sample the region of interest
+            #Transform describes the affine transformation matrix that defines the raster that is being used
+            window = rasterio.windows.from_bounds(*bbox, transform=src_file.transform)
+            #Read the first band of the tif file. Files are single band
+            subset = src_file.read(1, window=window)
     if generate_coordinates:
         window_transform = src_file.window_transform(window)
         longitudes, latitudes = generate_transform_coordinates(subset, window_transform)
@@ -75,12 +77,13 @@ def read_polygon_area(url, shp_file, shp_path="", generate_coordinates=True):
         return 0
     #Read the shapefile 
     polygon = gpd.read_file(os.path.join(shp_path, shp_file))
-    with rasterio.open(url) as src:
-        #Convert the polygon to the CRS used within the src file
-        polygon = polygon.to_crs(src.crs)
-        #Mask out the polygon of interest and crop it out of the image
-        out_img, out_transform = mask(src, polygon.geometry.apply(shapely.geometry.mapping), crop=True)
-    #Returned array is 3D where the first axis is the number of bands. The tif files contain a single band in this case so this dimension can be dropped
+    with Env(GTIFF_SRS_SOURCE="EPSG"):
+        with rasterio.open(url) as src:
+            #Convert the polygon to the CRS used within the src file
+            polygon = polygon.to_crs(src.crs)
+            #Mask out the polygon of interest and crop it out of the image
+            out_img, out_transform = mask(src, polygon.geometry.apply(shapely.geometry.mapping), crop=True)
+        #Returned array is 3D where the first axis is the number of bands. The tif files contain a single band in this case so this dimension can be dropped
     subset = out_img[0]
     if generate_coordinates:
         longitudes, latitudes = generate_transform_coordinates(subset, out_transform)
