@@ -10,20 +10,21 @@ def construct_bbox(param_dict):
 def filter_parameters(param_list, param_dict, layer_name, sub_layer_name, 
                       sub_sub_layer_name=""):
     if not sub_sub_layer_name:
-        if param_dict["layers"][layer_name][sub_layer_name]["include_all"]:
+        if param_dict["layers"]["chelsa"][layer_name][sub_layer_name]["include_all"]:
             return param_list
-        elif param_dict["layers"][layer_name][sub_layer_name]["included"]:
-            return param_dict["layers"][layer_name][sub_layer_name]["included"]
-        elif param_dict["layers"][layer_name][sub_layer_name]["excluded"]:
-            return list(set(param_list)-set(param_dict["layers"][layer_name][sub_layer_name]["excluded"]))    
+        elif param_dict["layers"]["chelsa"][layer_name][sub_layer_name]["included"]:
+            return param_dict["layers"]["chelsa"][layer_name][sub_layer_name]["included"]
+        elif param_dict["layers"]["chelsa"][layer_name][sub_layer_name]["excluded"]:
+            return list(set(param_list)-set(param_dict["layers"]["chelsa"][layer_name][sub_layer_name]["excluded"]))    
     else:
-        if param_dict["layers"][layer_name][sub_layer_name][sub_sub_layer_name]["include_all"]:
+        if param_dict["layers"]["chelsa"][layer_name][sub_layer_name][sub_sub_layer_name]["include_all"]:
             return param_list
-        elif param_dict["layers"][layer_name][sub_layer_name][sub_sub_layer_name]["included"]:
-            return param_dict["layers"][layer_name][sub_layer_name][sub_sub_layer_name]["included"]
-        elif param_dict["layers"][layer_name][sub_layer_name][sub_sub_layer_name]["excluded"]:
-            return list(set(param_list)-set(param_dict["layers"][layer_name][sub_layer_name][sub_sub_layer_name]["excluded"]))
-        
+        elif param_dict["layers"]["chelsa"][layer_name][sub_layer_name][sub_sub_layer_name]["included"]:
+            return param_dict["layers"]["chelsa"][layer_name][sub_layer_name][sub_sub_layer_name]["included"]
+        elif param_dict["layers"]["chelsa"][layer_name][sub_layer_name][sub_sub_layer_name]["excluded"]:
+            return list(set(param_list)-set(param_dict["layers"]["chelsa"][layer_name][sub_layer_name][sub_sub_layer_name]["excluded"]))
+
+
 def read_chelsa_month_param(param_file, param_path="../../../config"):
     var = ["clt", "cmi", "hurs", "pet", "pr", "rsds", "sfcWind", "tas", "tasmax", "tasmin", "vpd"]
     layer_name = "chelsa_month"
@@ -38,12 +39,12 @@ def read_chelsa_month_param(param_file, param_path="../../../config"):
     var = filter_parameters(var, param_dict, layer_name, "variables") 
     chelsa_month_params = {"var":var, 
                            "bbox":bbox, 
-                           "start_month":param_dict["layers"][layer_name]["time"]["start_month"],
-                           "end_month":param_dict["layers"][layer_name]["time"]["end_month"],
-                           "start_year":param_dict["layers"][layer_name]["time"]["start_year"],
-                           "end_year":param_dict["layers"][layer_name]["time"]["end_year"],
-                           "base_url":param_dict["layers"][layer_name]["source"]["base_url"],
-                           "version":param_dict["layers"][layer_name]["source"]["version"]}
+                           "start_month":param_dict["layers"]["chelsa"][layer_name]["time"]["start_month"],
+                           "end_month":param_dict["layers"]["chelsa"][layer_name]["time"]["end_month"],
+                           "start_year":param_dict["layers"]["chelsa"][layer_name]["time"]["start_year"],
+                           "end_year":param_dict["layers"]["chelsa"][layer_name]["time"]["end_year"],
+                           "base_url":param_dict["layers"]["chelsa"][layer_name]["source"]["base_url"],
+                           "version":param_dict["layers"]["chelsa"][layer_name]["source"]["version"]}
     return chelsa_month_params
 
 def read_chelsa_clim_ref_period_param(param_file, param_path="../../../config"):
@@ -65,9 +66,9 @@ def read_chelsa_clim_ref_period_param(param_file, param_path="../../../config"):
     var = filter_parameters(var, param_dict, layer_name, "variables")
     chelsa_clim_ref_period_params = {"var":var, 
                                      "bbox":bbox, 
-                                     "ref_period":param_dict["layers"][layer_name]["time"]["year_range"],
-                                     "base_url":param_dict["layers"][layer_name]["source"]["base_url"],
-                                     "version":param_dict["layers"][layer_name]["source"]["version"]}
+                                     "ref_period":param_dict["layers"]["chelsa"][layer_name]["time"]["year_range"],
+                                     "base_url":param_dict["layers"]["chelsa"][layer_name]["source"]["base_url"],
+                                     "version":param_dict["layers"]["chelsa"][layer_name]["source"]["version"]}
     return chelsa_clim_ref_period_params  
 
 def read_chelsa_clim_ref_month_param(param_file, param_path="../../../config"):
@@ -85,9 +86,9 @@ def read_chelsa_clim_ref_month_param(param_file, param_path="../../../config"):
     chelsa_clim_ref_month_params = {"var":var, 
                                      "bbox":bbox, 
                                      "months":months,
-                                     "ref_period":param_dict["layers"][layer_name]["time"]["year_range"],
-                                     "base_url":param_dict["layers"][layer_name]["source"]["base_url"],
-                                     "version":param_dict["layers"][layer_name]["source"]["version"]}
+                                     "ref_period":param_dict["layers"]["chelsa"][layer_name]["time"]["year_range"],
+                                     "base_url":param_dict["layers"]["chelsa"][layer_name]["source"]["base_url"],
+                                     "version":param_dict["layers"]["chelsa"][layer_name]["source"]["version"]}
     return chelsa_clim_ref_month_params 
 
 def read_chelsa_clim_sim_period_param(param_file, param_path="../../../config"):
@@ -97,7 +98,7 @@ def read_chelsa_clim_sim_period_param(param_file, param_path="../../../config"):
          'lgd','ngd0','ngd10','ngd5','npp','scd','swe']
     year_ranges = ["2011-2040","2041-2070","2071-2100"]
     model_names = ['gfdl-esm4','ipsl-cm6a-lr','mpi-esm1-2-hr','mri-esm2-0','ukesm1-0-ll']
-    ensemble_members = ["ssp126","ssp370","ssp585"]
+    scenarios = ["ssp126","ssp370","ssp585"]
     layer_name = "chelsa_clim_sim_period"
     #Construct the relative path to the parameter yaml file
     param_filepath = os.path.join(param_path, param_file)
@@ -109,21 +110,21 @@ def read_chelsa_clim_sim_period_param(param_file, param_path="../../../config"):
     var = filter_parameters(var, param_dict, layer_name, "variables")
     year_ranges = filter_parameters(year_ranges,param_dict, layer_name, "time")
     model_names = filter_parameters(model_names,param_dict, layer_name,"model")
-    ensemble_members = filter_parameters(ensemble_members,param_dict, layer_name,"ensemble_member")
+    scenarios = filter_parameters(scenarios,param_dict, layer_name,"scenario")
     chelsa_clim_sim_period_params = {"var":var, 
                                      "bbox":bbox, 
                                      "year_ranges":year_ranges,
                                      "model_names":model_names,
-                                     "ensemble_members":ensemble_members,
-                                     "base_url":param_dict["layers"][layer_name]["source"]["base_url"],
-                                     "version":param_dict["layers"][layer_name]["source"]["version"]}
+                                     "scenarios":scenarios,
+                                     "base_url":param_dict["layers"]["chelsa"][layer_name]["source"]["base_url"],
+                                     "version":param_dict["layers"]["chelsa"][layer_name]["source"]["version"]}
     return chelsa_clim_sim_period_params 
 
 def read_chelsa_clim_sim_month_param(param_file, param_path="../../../config"):
     var=["pr", "tas", "tasmax", "tasmin"]
     year_ranges = ["2011-2040","2041-2070","2071-2100"]
     model_names = ['gfdl-esm4','ipsl-cm6a-lr','mpi-esm1-2-hr','mri-esm2-0','ukesm1-0-ll']
-    ensemble_members = ["ssp126","ssp370","ssp585"]
+    scenarios = ["ssp126","ssp370","ssp585"]
     layer_name = "chelsa_clim_sim_month"
     #Construct the relative path to the parameter yaml file
     param_filepath = os.path.join(param_path, param_file)
@@ -136,13 +137,13 @@ def read_chelsa_clim_sim_month_param(param_file, param_path="../../../config"):
     year_ranges = filter_parameters(year_ranges, param_dict, layer_name, "time", "year_ranges")
     months = filter_parameters(list(range(1,13)),param_dict, layer_name, "time", "months")
     model_names = filter_parameters(model_names,param_dict, layer_name,"model")
-    ensemble_members = filter_parameters(ensemble_members,param_dict, layer_name,"ensemble_member")
+    scenarios = filter_parameters(scenarios,param_dict, layer_name,"scenario")
     chelsa_clim_ref_month_params = {"var":var, 
                                      "bbox":bbox, 
                                      "year_ranges":year_ranges,
                                      "months":months,
                                      "model_names":model_names,
-                                     "ensemble_members":ensemble_members,
-                                     "base_url":param_dict["layers"][layer_name]["source"]["base_url"],
-                                     "version":param_dict["layers"][layer_name]["source"]["version"]}
+                                     "scenarios":scenarios,
+                                     "base_url":param_dict["layers"]["chelsa"][layer_name]["source"]["base_url"],
+                                     "version":param_dict["layers"]["chelsa"][layer_name]["source"]["version"]}
     return chelsa_clim_ref_month_params

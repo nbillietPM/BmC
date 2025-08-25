@@ -1,48 +1,8 @@
 import rasterio
-import xarray
+import xarray as xr
 import pandas as pd 
 import sparse
-
-species_df = pd.read_csv("data/species_oi.csv", sep="\t")
-species_df["time"]= pd.to_datetime(species_df[["year", "month"]].assign(day=1))
-
-# Specify the columns you’re indexing on
-idx_cols = ["time", "specieskey", "genuskey", "familykey", "classkey", "eeacellcode"]
-
-# Drop any row that has a NaN in one of those columns
-species_df_clean = species_df.dropna(subset=idx_cols)
-
-# Now set the MultiIndex
-species_df_indexed = species_df_clean.set_index(idx_cols)
-
-#2. Build coords & data, ensuring no −1’s sneak in
-
-# Stack the level codes into an (ndim, nnz) array
-coords = np.vstack(species_df_indexed.index.codes)
-
-# Pull out the data
-data = species_df_indexed["occurrences"].values
-
-# Mask out any lingering invalid positions just to be safe
-valid_mask = (coords >= 0).all(axis=0)
-coords = coords[:, valid_mask]
-data   = data[valid_mask]
-
-# Compute the shape
-shape = [len(level) for level in species_df_indexed.index.levels]
-
-# 3. Sparse COO
-sparse_data = sparse.COO(coords, data, shape=shape)
-
-# 4. xarray DataArray
-da = xr.DataArray(
-    sparse_data,
-    dims=species_df_indexed.index.names,
-    coords={name: level for name, level in 
-            zip(species_df_indexed.index.names,
-                species_df_indexed.index.levels)}
-)
-
+import numpy as np
 
 def gbif_sparse_array(dataframe, idx_cols, var_col, add_time=True):
     """

@@ -82,7 +82,7 @@ def format_url_clim_ref_monthly(var, month,
         return f"{base_url}/{var}/CHELSA_{var}_{month:02d}_{ref_period}_{version}.tif"
     
 
-def format_url_clim_sim_period(var, year_range, model_name, ensemble_member, 
+def format_url_clim_sim_period(var, year_range, model_name, scenario, 
                                base_url="https://os.zhdk.cloud.switch.ch/chelsav2/GLOBAL/climatologies",
                                version="V.2.1"):
     """
@@ -97,15 +97,15 @@ def format_url_clim_sim_period(var, year_range, model_name, ensemble_member,
     model_names = ['GFDL-ESM4','IPSL-CM6A-LR','MPI-ESM1-2-HR','MRI-ESM2-0','UKESM1-0-LL','gfdl-esm4','ipsl-cm6a-lr','mpi-esm1-2-hr','mri-esm2-0','ukesm1-0-ll']
     if model_name not in model_names or model_name.upper() not in model_names:
         raise ValueError(f"Modelname invalid: {model_name} Please use on of the following model names {model_names}")
-    ensemble_members = ["ssp126","ssp370","ssp585"]
-    if ensemble_member not in ensemble_members:
-        raise ValueError(f"Ensemble member invalid: {ensemble_member} Please use one of the following ensemble members {ensemble_members}")
+    scenarios = ["ssp126","ssp370","ssp585"]
+    if scenario not in scenarios:
+        raise ValueError(f"Ensemble member invalid: {scenario} Please use one of the following ensemble members {scenarios}")
     year_ranges = ["2011-2040","2041-2070","2071-2100"]
     if year_range not in year_ranges:
         raise ValueError(f"Year range invalid: {year_range} Please use on of the following year ranges {year_ranges}")
-    return f"{base_url}/{year_range}/{model_name.upper()}/{ensemble_member.lower()}/bio/CHELSA_{var.lower()}_{year_range}_{model_name.lower()}_{ensemble_member.lower()}_{version}.tif"
+    return f"{base_url}/{year_range}/{model_name.upper()}/{scenario.lower()}/bio/CHELSA_{var.lower()}_{year_range}_{model_name.lower()}_{scenario.lower()}_{version}.tif"
 
-def format_url_clim_sim_month(var, year_range, month, model_name, ensemble_member, 
+def format_url_clim_sim_month(var, year_range, month, model_name, scenario, 
                               base_url="https://os.zhdk.cloud.switch.ch/chelsav2/GLOBAL/climatologies",
                               version="V.2.1"):
     """
@@ -119,11 +119,11 @@ def format_url_clim_sim_month(var, year_range, month, model_name, ensemble_membe
     model_names = ['GFDL-ESM4','IPSL-CM6A-LR','MPI-ESM1-2-HR','MRI-ESM2-0','UKESM1-0-LL','gfdl-esm4','ipsl-cm6a-lr','mpi-esm1-2-hr','mri-esm2-0','ukesm1-0-ll']
     if model_name not in model_names or model_name.upper() not in model_names:
         raise ValueError(f"Modelname invalid: {model_name} Please use on of the following model names {model_names}")
-    ensemble_members = ["ssp126","ssp370","ssp585"]
-    if ensemble_member not in ensemble_members:
-        raise ValueError(f"Ensemble member invalid: {ensemble_member} Please use one of the following ensemble members {ensemble_members}")
+    scenarios = ["ssp126","ssp370","ssp585"]
+    if scenario not in scenarios:
+        raise ValueError(f"Ensemble member invalid: {scenario} Please use one of the following ensemble members {scenarios}")
     year_ranges = ["2011-2040","2041-2070","2071-2100"]
     if year_range not in year_ranges:
         raise ValueError(f"Year range invalid: {year_range} Please use on of the following year ranges {year_ranges}")
     #Added a replace '-' with "_" to take the deviating naming structure of CHELSA into account
-    return f"{base_url}/{year_range}/{model_name.upper()}/{ensemble_member.lower()}/{var.lower()}/CHELSA_{model_name.lower()}_r1i1p1f1_w5e5_{ensemble_member.lower()}_{var.lower()}_{month:02d}_{year_range.replace("-", "_")}_norm.tif"
+    return f"{base_url}/{year_range}/{model_name.upper()}/{scenario.lower()}/{var.lower()}/CHELSA_{model_name.lower()}_r1i1p1f1_w5e5_{scenario.lower()}_{var.lower()}_{month:02d}_{year_range.replace("-", "_")}_norm.tif"

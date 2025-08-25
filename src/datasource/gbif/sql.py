@@ -118,6 +118,17 @@ def bbox2polygon_wkt(bbox):
     polygon = shapely.geometry.box(*bbox)
     return polygon.wkt
 
+"""
+taxon_ranks = ["species", "genus", "family", "order", "class", "phylum", "kingdom"]
+
+class gbif_sql_query():
+    def __init__(self):
+        self.taxon_ranks = ["species", "genus", "family", "order", "class", "phylum", "kingdom"]
+
+    def col_selection(self, col_names):
+
+def generate_sql_query
+"""
 
 def generate_json_query(usageKeys, bbox, begin_year, end_year, out_file="gbif_query.json", out_path="", sendNotification='true', notificationAddress=None):
     """

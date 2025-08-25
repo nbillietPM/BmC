@@ -2,6 +2,7 @@ data/
 *~
 *.tif
 *.nc
+*.zarr
 *.png
 *.csv
 *.zip

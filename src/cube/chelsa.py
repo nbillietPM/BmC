@@ -72,7 +72,7 @@ class chelsa_cube(spatiotemporal_cube):
         param_filepath = os.path.join(param_path, param_file)
         with open(param_filepath) as f:
             param_dict = yaml.safe_load(f)
-        enabled_layers = [param_dict["layers"][layer] for layer in self.layers]
+        enabled_layers = [param_dict["layers"]["chelsa"][layer] for layer in self.layers]
         functions = [self.generate_chelsa_month_layer, 
                      self.generate_chelsa_ref_period_layer,
                      self.generate_chelsa_ref_month_layer,
