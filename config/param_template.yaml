@@ -44,7 +44,6 @@ layers:
 
   chelsa:
     enabled: true
-    
     chelsa_month:
       enabled: true
       time:
