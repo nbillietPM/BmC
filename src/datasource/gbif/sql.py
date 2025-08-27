@@ -118,8 +118,19 @@ def bbox2polygon_wkt(bbox):
     polygon = shapely.geometry.box(*bbox)
     return polygon.wkt
 
+"""
+taxon_ranks = ["species", "genus", "family", "order", "class", "phylum", "kingdom"]
 
-def generate_json_query(usageKeys, bbox, out_file="gbif_query.json", out_path="", sendNotification='true', notificationAddress=None):
+class gbif_sql_query():
+    def __init__(self):
+        self.taxon_ranks = ["species", "genus", "family", "order", "class", "phylum", "kingdom"]
+
+    def col_selection(self, col_names):
+
+def generate_sql_query
+"""
+
+def generate_json_query(usageKeys, bbox, begin_year, end_year, out_file="gbif_query.json", out_path="", sendNotification='true', notificationAddress=None):
     """
     A function used in the generation of a SQL query which can be used to query data from the GBIF SQL API. The resulting GBIF query will be stored in a JSON object.
 
@@ -139,29 +150,61 @@ def generate_json_query(usageKeys, bbox, out_file="gbif_query.json", out_path=""
         "notificationAddresses": notificationAddress,
         "format": "SQL_TSV_ZIP"
     }
+    #quotes around order keyword to avoid error with SQL, ORDER is a reserved word in SQL so we need to quote it
     sql_query = """
     SELECT 
         "year", 
         "month",
-        decimalLatitude,
-        decimalLongitude,
+        GBIF_EEARGCode(1000, decimalLatitude, decimalLongitude, COALESCE(coordinateUncertaintyInMeters, 1000)) AS eeaCellCode,
         speciesKey,
-        species
+        species,
+        genusKey,
+        genus,
+        familyKey,
+        family,
+        orderKey,
+        "order",
+        classKey,
+        class,
+        COUNT(*) AS occurrences, 
+        COUNT(DISTINCT recordedBy) AS distinctObservers
     FROM
         occurrence
     WHERE 
         GBIF_Within('{wkt}', decimalLatitude, decimalLongitude) = TRUE AND
         hasCoordinate = TRUE AND 
+        occurrenceStatus = 'PRESENT' AND
         NOT ARRAY_CONTAINS(issue, 'ZERO_COORDINATE') AND 
         NOT ARRAY_CONTAINS(issue, 'COORDINATE_OUT_OF_RANGE') AND 
         NOT ARRAY_CONTAINS(issue, 'COORDINATE_INVALID') AND 
         NOT ARRAY_CONTAINS(issue, 'COUNTRY_COORDINATE_MISMATCH') AND 
         "year" IS NOT NULL AND 
         "month" IS NOT NULL AND 
+        "year" >= {begin_year} AND "year" <= {end_year} AND
         taxonKey IN ({keys})
+    GROUP BY
+        species,
+        speciesKey,
+        eeaCellCode,
+        "year",
+        "month",
+        genusKey,
+        genus,
+        familyKey,
+        family,
+        orderKey,
+        "order",
+        classKey,
+        class
+    ORDER BY 
+        "year" ASC,
+        "month" ASC,
+        speciesKey ASC
     """.format(
         wkt=wkt_str,
-        keys=",".join(map(str, usageKeys))
+        keys=",".join(map(str, usageKeys)),
+        begin_year=begin_year,
+        end_year=end_year
     ).strip()
 
     # Add to JSON query

@@ -1,3 +1,6 @@
+cube_dir: "out/prototype_cube/"
+cube_name: "prototype_test"
+
 spatial:
   # select the method which should be employed
   method: "bbox"
@@ -10,93 +13,124 @@ spatial:
     shapefile_path: "/shapefile/filename.shp"
 
 layers:
-  chelsa_month:
+  gbif:
     enabled: true
+    type:
+      occurences: true
+      absences: false
+    species_paths: "/directory/species_list.csv"
+    taxonomic:
+      highest_rank: "kingdom" #What is the highest taxonomic rank required
+      lowest_rank: "species" #What is the lowest taxonomic rank required
     time:
-      start_year: 1980
-      start_month: 1
-      end_year: 1980
-      end_month: 12
-      year_range: [1979, 2020]  # Optional: for fallback or metadata only
-    variables:
-      include_all: true
-      included: []       # Ignored if include_all is true
-      excluded: []
-    source:
-      base_url: "https://os.zhdk.cloud.switch.ch/chelsav2/GLOBAL/monthly"
-      version: "V.2.1"  # Optional data version tag
-
-  chelsa_clim_ref_period:
+      start_year: #Number
+      end_year: #Number
+      start_month: #Number between 1 and 12
+      end_month: #Number between 1 and 12
+    defaultCoordinateUncertainty: 1000
+    cubing:
+      enabled: true
+      cubingGrid: "EEA"
+    selection_issues: #Selection flags that need to be taken into account when selecting records
+      spatial:
+        hasCoordinate: true 
+        zeroCoordinate: true
+        invalidCoordinate: true 
+        countryMismatch: true
+    file:
+      file_path: "data/"
+      file_name: "species_oi.csv"
+      sep: "\t"
+  chelsa:
     enabled: true
-    time:
-      year_range: "1981-2010"
-    variables:
-      include_all: true
-      included: []
-      excluded: []
-    source:
-      base_url: "https://os.zhdk.cloud.switch.ch/chelsav2/GLOBAL/climatologies/1981-2010"
-      version: "V.2.1"
-  
-  chelsa_clim_ref_month:
-    enabled: true
-    time:
-      include_all: true 
-      months: []
-      year_range: "1981-2010"
-    variables:
-      include_all: true
-      included: []
-      excluded: []
-    source:
-      base_url: "https://os.zhdk.cloud.switch.ch/chelsav2/GLOBAL/climatologies/1981-2010"
-      version: "V.2.1"
-  
-  chelsa_clim_sim_period:
-    enabled: true
-    time:
-      include_all: true
-      included: []
-      excluded: []
-    variables:
-      include_all: true
-      included: []
-      excluded: []
-    model:
-      include_all: true
-      included: []
-      excluded: []
-    ensemble_member:
-      include_all: true
-      included: []
-      excluded: []
-    source:
-      base_url: "https://os.zhdk.cloud.switch.ch/chelsav2/GLOBAL/climatologies"
-      version: "V.2.1"
-
-  chelsa_clim_sim_month:
-    enabled: true
-    time:
-      year_ranges:
-        include_all: true
-        included: []
+    chelsa_month:
+      enabled: true
+      time:
+        start_year: 1980
+        start_month: 1
+        end_year: 1980
+        end_month: 2
+        year_range: [1979, 2020]  # Optional: for fallback or metadata only
+      variables:
+        include_all: false
+        included: ["tas", "tasmin", "tasmax"]       # Ignored if include_all is true
         excluded: []
-      months:
+      source:
+        base_url: "https://os.zhdk.cloud.switch.ch/chelsav2/GLOBAL/monthly"
+        version: "V.2.1"  # Optional data version tag
+
+    chelsa_clim_ref_period:
+      enabled: true
+      time:
+        year_range: "1981-2010"
+      variables:
+        include_all: false
+        included: ["bio1", "bio2", "bio3"]
+        excluded: []
+      source:
+        base_url: "https://os.zhdk.cloud.switch.ch/chelsav2/GLOBAL/climatologies/1981-2010"
+        version: "V.2.1"
+    
+    chelsa_clim_ref_month:
+      enabled: true
+      time:
         include_all: false 
         included: [1,2]
         excluded: []
-    variables:
-      include_all: true
-      included: []
-      excluded: []
-    model:
-      include_all: true
-      included: []
-      excluded: []
-    ensemble_member:
-      include_all: true
-      included: []
-      excluded: []
-    source:
-      base_url: "https://os.zhdk.cloud.switch.ch/chelsav2/GLOBAL/climatologies"
-      version: "V.2.1"
+        year_range: "1981-2010"
+      variables:
+        include_all: false
+        included: ["tas", "tasmin", "tasmax"]
+        excluded: []
+      source:
+        base_url: "https://os.zhdk.cloud.switch.ch/chelsav2/GLOBAL/climatologies/1981-2010"
+        version: "V.2.1"
+    
+    chelsa_clim_sim_period:
+      enabled: true
+      time:
+        include_all: false
+        included: ["2011-2040", "2041-2070"]
+        excluded: []
+      variables:
+        include_all: false
+        included: ["bio1", "bio2", "bio3"]
+        excluded: []
+      model:
+        include_all: false
+        included: ["gfdl-esm4"]
+        excluded: []
+      scenario:
+        include_all: false
+        included: []
+        excluded: ["ssp585"]
+      source:
+        base_url: "https://os.zhdk.cloud.switch.ch/chelsav2/GLOBAL/climatologies"
+        version: "V.2.1"
+
+    chelsa_clim_sim_month:
+      enabled: true
+      time:
+        year_ranges:
+          include_all: false
+          included: ["2011-2040", "2041-2070"]
+          excluded: []
+        months:
+          include_all: false 
+          included: [1]
+          excluded: []
+      variables:
+        include_all: false
+        included: ["tas", "tasmin", "tasmax"]
+        excluded: []
+      model:
+        include_all: false
+        included: ["ipsl-cm6a-lr"]
+        excluded: []
+      scenario:
+        include_all: false
+        included: []
+        excluded: ["ssp370"]
+      source:
+        base_url: "https://os.zhdk.cloud.switch.ch/chelsav2/GLOBAL/climatologies"
+        version: "V.2.1"
