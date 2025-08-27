@@ -40,14 +40,6 @@ class bmd_cube(chelsa_cube, gbif_cube):
         return None
     
     def construct_datatree(self) -> str:
-        #Build output path & ensure folder exists
-        os.makedirs(self.cube_dir, exist_ok=True)
-        out_path = os.path.join(self.cube_dir, f"{self.cube_name}.nc")
-
-        #Remove any pre-existing file so netCDF4 won't try to append/lock
-        if os.path.isfile(out_path):
-            os.remove(out_path)
-
         #Assemble a fresh DataTree
         self.data_tree = DataTree(name=self.cube_name)
         if self.groups.get("static"):
@@ -125,8 +117,8 @@ class bmd_cube(chelsa_cube, gbif_cube):
         return da.to_dataset()
 
     def export_tree(self):
-        out_dir = os.path.join(self.cube_dir, self.cube_name)
-        os.makedirs(out_dir, exist_ok=True)
+        #out_dir = os.path.join(self.cube_dir, self.cube_name)
+        os.makedirs(self.cube_dir, exist_ok=True)
         #Make a copy of the datatree which will be written to the disc
         if not self.data_tree:
             raise ValueError("self.data_tree is empty, please use the self.construct_datatree method to build a tree")
@@ -141,7 +133,7 @@ class bmd_cube(chelsa_cube, gbif_cube):
                     if isinstance(da.data, sparse.COO):
                         #convert the sparse data to a pseudo dense format that can be saved without complete densification
                         dt_copy[branch][leaf].ds = self.sparse_to_pseudodense(dt_copy[branch][leaf].ds, name)
-        dt_copy.to_netcdf(os.path.join(out_dir, self.cube_name+".nc"), format="NETCDF4")
+        dt_copy.to_netcdf(os.path.join(self.cube_dir, f"{self.cube_name}.nc"), format="NETCDF4")
         return None        
 
     def import_tree(self, cube_dir, cube_name):

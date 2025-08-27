@@ -11,6 +11,7 @@ data/
 __pycache__/
 !scripts/prototype/inp/prototypeNames.csv
 !scripts/prototype/img/AOI.png
+!scripts/prototype/out/prototype_cube/prototype_test.nc
 .Rhistory
 .RData
 .Ruserdata

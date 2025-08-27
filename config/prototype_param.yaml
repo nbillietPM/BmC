@@ -1,4 +1,4 @@
-cube_dir: "test/"
+cube_dir: "out/prototype_cube/"
 cube_name: "prototype_test"
 
 spatial:
