@@ -125,6 +125,10 @@ def format_url_clim_sim_month(var, year_range, month, model_name, scenario,
     if year_range not in year_ranges:
         raise ValueError(f"Year range invalid: {year_range} Please use on of the following year ranges {year_ranges}")
     #Added a replace '-' with "_" to take the deviating naming structure of CHELSA into account
+<<<<<<< HEAD
     year_range_clean = year_range.replace("-", "_")
     return (f"{base_url}/{year_range}/{model_name.upper()}/{scenario.lower()}/{var.lower()}/CHELSA_{model_name.lower()}_r1i1p1f1_w5e5_{scenario.lower()}_{var.lower()}_{month:02d}_{year_range_clean}_norm.tif")
     #return f"{base_url}/{year_range}/{model_name.upper()}/{scenario.lower()}/{var.lower()}/CHELSA_{model_name.lower()}_r1i1p1f1_w5e5_{scenario.lower()}_{var.lower()}_{month:02d}_{year_range.replace("-", "_")}_norm.tif"
+=======
+    return f"{base_url}/{year_range}/{model_name.upper()}/{scenario.lower()}/{var.lower()}/CHELSA_{model_name.lower()}_r1i1p1f1_w5e5_{scenario.lower()}_{var.lower()}_{month:02d}_{year_range.replace("-", "_")}_norm.tif"
+>>>>>>> 9b12b8c5dde7de6709ce078eeb63d247a6eadae5
