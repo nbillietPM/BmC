@@ -23,7 +23,8 @@ class chelsa_cube(spatiotemporal_cube):
         target_long = data[1].long.values
         upscaled_clt = self.regrid_spatial_coordinates(data[0], target_lat, target_long)
         data = [upscaled_clt]+list(data[1:])
-        return self.da_concat(data, "variable", list(var_names))
+        ds = xr.Dataset(dict(zip(var_names, data)))
+        return ds
 
     def generate_chelsa_ref_period_layer(self, param_file, param_path):
         chelsa_ref_period_param = extract_param.read_chelsa_clim_ref_period_param(param_file, param_path = param_path)
@@ -39,8 +40,8 @@ class chelsa_cube(spatiotemporal_cube):
             upscaled_da = [self.regrid_spatial_coordinates(data[idx], target_lat, target_long) for idx in upscale_idx]
             for idx, da in zip(upscale_idx, upscaled_da):
                 data[idx] = da
-        #return var_names, data
-        return self.da_concat(data, "variable", list(var_names))
+        ds = xr.Dataset(dict(zip(var_names, data)))
+        return ds
 
     def generate_chelsa_ref_month_layer(self, param_file, param_path):
         chelsa_ref_month_param = extract_param.read_chelsa_clim_ref_month_param(param_file, param_path = param_path)
@@ -52,23 +53,26 @@ class chelsa_cube(spatiotemporal_cube):
         target_long = data[1].long.values
         upscaled_clt = self.regrid_spatial_coordinates(data[0], target_lat, target_long)
         data = [upscaled_clt]+list(data[1:])
-        return self.da_concat(data, "variable", list(var_names))
+        ds = xr.Dataset(dict(zip(var_names, data)))
+        return ds
 
     def generate_chelsa_sim_period_layer(self, param_file, param_path):
         chelsa_sim_period_param = extract_param.read_chelsa_clim_sim_period_param(param_file, param_path = param_path)
         var_names, data = zip(*self.da_layer_constructor(layer.chelsa_clim_sim_period, chelsa_sim_period_param))
-        return self.da_concat(data, "variable", list(var_names))
+        ds = xr.Dataset(dict(zip(var_names, data)))
+        return ds
 
     def generate_chelsa_sim_month_layer(self, param_file, param_path):
         chelsa_sim_month_param = extract_param.read_chelsa_clim_sim_month_param(param_file, param_path = param_path)
         var_names, data = zip(*self.da_layer_constructor(layer.chelsa_clim_sim_month, chelsa_sim_month_param))
-        return self.da_concat(data, "variable", list(var_names))
+        ds = xr.Dataset(dict(zip(var_names, data)))
+        return ds
 
     def generate_chelsa_cube(self, param_file, param_path):
         param_filepath = os.path.join(param_path, param_file)
         with open(param_filepath) as f:
             param_dict = yaml.safe_load(f)
-        enabled_layers = [param_dict["layers"][layer] for layer in self.layers]
+        enabled_layers = [param_dict["layers"]["chelsa"][layer] for layer in self.layers]
         functions = [self.generate_chelsa_month_layer, 
                      self.generate_chelsa_ref_period_layer,
                      self.generate_chelsa_ref_month_layer,
@@ -76,7 +80,7 @@ class chelsa_cube(spatiotemporal_cube):
                      self.generate_chelsa_sim_month_layer]
         enabled_layers_names = [name for name, call in zip(self.layers, enabled_layers) if call]
         data = [func(param_file, param_path) for func, call in zip(functions, enabled_layers) if call]
-        return dict(zip(enabled_layers_names, data))
+        return enabled_layers_names, data
 
 
 
