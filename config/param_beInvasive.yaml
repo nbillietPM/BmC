@@ -48,7 +48,7 @@ layers:
       enabled: true
       time:
         start_year: 1979
-        start_month: 1
+        start_month: 2
         end_year: 2018
         end_month: 12
         year_range: [1979, 2020]  # Optional: for fallback or metadata only
