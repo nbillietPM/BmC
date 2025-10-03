@@ -1,7 +1,19 @@
+import requests
+
+def validate_url_exists(url: str) -> bool:
+    try:
+        response = requests.head(url, timeout=10) 
+        # Response code 200 indicates a valid URL
+        if response.status_code == 200:
+            return True
+        return False
+    except requests.exceptions.RequestException:
+        return False
+
 def format_url_month_ts(var, month, year, 
                         base_url="https://os.zhdk.cloud.switch.ch/chelsav2/GLOBAL/monthly", 
                         version="V.2.1",
-                        year_range=list(range(1979,2021))):
+                        year_range=list(range(1979,2020))):
     """
     Generates the link to the S3 bucket where the CHELSA monthly time series is stores
 
