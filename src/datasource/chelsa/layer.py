@@ -21,6 +21,10 @@ def generate_month_year_range(start_month, end_month, start_year, end_year):
         datetimes (list<tuple<int>>): a list consisting of (month, year) tuples  
     """
     datetimes = []
+    if end_year<start_year:
+        raise ValueError(f"The end year falls before the start year (start_year>end_year)")
+    if (start_year==end_year) and (end_month<start_month):
+        raise ValueError(f"Time range in the same year requires the end month to be greater than the start month")
     year, month = start_year, start_month
     while (year < end_year) or (year == end_year and month <= end_month):
         datetimes.append((month, year))
