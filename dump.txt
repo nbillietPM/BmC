@@ -1,0 +1,4705 @@
+Column name 	Data type 	Nullable 	Definition
+
+gbifid
+	
+
+String
+	
+
+No
+	
+
+24 Unique GBIF key for the occurrence.
+
+We aim to keep these keys stable, but this is not possible in every case.
+
+accessrights
+	
+
+String
+	
+
+Yes
+	
+
+24 Information about who can access the resource or an indication of its security status.
+
+bibliographiccitation
+	
+
+String
+	
+
+Yes
+	
+
+24 A bibliographic reference for the resource.
+
+language
+	
+
+String
+	
+
+Yes
+	
+
+24 A language of the resource.
+
+license
+	
+
+String
+	
+
+Yes
+	
+
+24 A legal document giving official permission to do something with the occurrence.
+
+modified
+	
+
+Timestamp
+	
+
+Yes
+	
+
+24 The most recent date-time on which the occurrence was changed, according to the publisher.
+
+publisher
+	
+
+String
+	
+
+Yes
+	
+
+24 The name of the organization publishing this record
+
+references
+	
+
+String
+	
+
+Yes
+	
+
+24 A related resource that is referenced, cited, or otherwise pointed to by the described resource.
+
+rightsholder
+	
+
+String
+	
+
+Yes
+	
+
+24 A person or organization owning or managing rights over the resource.
+
+type
+	
+
+String
+	
+
+Yes
+	
+
+24 The nature or genre of the resource.
+
+institutionid
+	
+
+String
+	
+
+Yes
+	
+
+24 An identifier for the institution having custody of the object(s) or information referred to in the record.
+
+collectionid
+	
+
+String
+	
+
+Yes
+	
+
+24 An identifier for the collection or dataset from which the record was derived.
+
+datasetid
+	
+
+String array
+	
+
+Yes
+	
+
+24 An identifier for the set of data. May be a global unique identifier or an identifier specific to a collection or institution.
+
+institutioncode
+	
+
+String
+	
+
+Yes
+	
+
+24 The name (or acronym) in use by the institution having custody of the object(s) or information referred to in the record.
+
+collectioncode
+	
+
+String
+	
+
+Yes
+	
+
+24 The name, acronym, coden, or initialism identifying the collection or data set from which the record was derived.
+
+datasetname
+	
+
+String array
+	
+
+Yes
+	
+
+24 The name identifying the data set from which the record was derived.
+
+ownerinstitutioncode
+	
+
+String
+	
+
+Yes
+	
+
+24 The name (or acronym) in use by the institution having ownership of the object(s) or information referred to in the record.
+
+basisofrecord
+	
+
+String
+	
+
+Yes
+	
+
+24 The values of the Darwin Core term Basis of Record which can apply to occurrences.
+
+See GBIF’s Darwin Core Type Vocabulary for definitions.
+
+informationwithheld
+	
+
+String
+	
+
+Yes
+	
+
+24 Additional information that exists, but that has not been shared in the given record.
+
+datageneralizations
+	
+
+String
+	
+
+Yes
+	
+
+24 Actions taken to make the shared data less specific or complete than in its original form. Suggests that alternative data of higher quality may be available on request.
+
+dynamicproperties
+	
+
+String
+	
+
+Yes
+	
+
+24 A list of additional measurements, facts, characteristics, or assertions about the record. Meant to provide a mechanism for structured content.
+
+occurrenceid
+	
+
+String
+	
+
+Yes
+	
+
+24 An identifier for the dwc:Occurrence (as opposed to a particular digital record of the dwc:Occurrence). In the absence of a persistent global unique identifier, construct one from a combination of identifiers in the record that will most closely make the dwc:occurrenceID globally unique.
+
+catalognumber
+	
+
+String
+	
+
+Yes
+	
+
+24 An identifier (preferably unique) for the record within the data set or collection.
+
+recordnumber
+	
+
+String
+	
+
+Yes
+	
+
+24 An identifier given to the dwc:Occurrence at the time it was recorded. Often serves as a link between field notes and a dwc:Occurrence record, such as a specimen collector’s number.
+
+recordedby
+	
+
+String array
+	
+
+Yes
+	
+
+24 A person, group, or organization responsible for recording the original occurrence.
+
+recordedbyid
+	
+
+String array
+	
+
+Yes
+	
+
+24 A list (concatenated and separated) of the globally unique identifier for the person, people, groups, or organizations responsible for recording the original dwc:Occurrence.
+
+individualcount
+	
+
+Integer
+	
+
+Yes
+	
+
+24 The number of individuals present at the time of the Occurrence.
+
+organismquantity
+	
+
+String
+	
+
+Yes
+	
+
+24 A number or enumeration value for the quantity of organisms.
+
+organismquantitytype
+	
+
+String
+	
+
+Yes
+	
+
+24 The type of quantification system used for the quantity of organisms.
+
+sex
+	
+
+Structure with string .concept and string array .lineage
+	
+
+Yes
+	
+
+24 The sex of the biological individual(s) represented in the dwc:Occurrence.
+
+lifestage
+	
+
+Structure with string .concept and string array .lineage
+	
+
+Yes
+	
+
+24 The age class or life stage of the Organism(s) at the time the Occurrence was recorded.
+
+Values are aligned to the GBIF LifeStage vocabulary
+
+reproductivecondition
+	
+
+String
+	
+
+Yes
+	
+
+24 The reproductive condition of the biological individual(s) represented in the dwc:Occurrence.
+
+caste
+	
+
+String
+	
+
+Yes
+	
+
+24 Categorisation of individuals for eusocial species (including some mammals and arthropods).
+
+behavior
+	
+
+String
+	
+
+Yes
+	
+
+24 The behavior shown by the subject at the time the dwc:Occurrence was recorded.
+
+vitality
+	
+
+String
+	
+
+Yes
+	
+
+24 An indication of whether a dwc:Organism was alive or dead at the time of collection or observation.
+
+establishmentmeans
+	
+
+Structure with string .concept and string array .lineage
+	
+
+Yes
+	
+
+24 Statement about whether an organism or organisms have been introduced to a given place and time through the direct or indirect activity of modern humans.
+
+Values are aligned to the GBIF EstablishmentMeans vocabulary,which is derived from the Darwin Core EstablishmentMeans vocabulary.
+
+degreeofestablishment
+	
+
+Structure with string .concept and string array .lineage
+	
+
+Yes
+	
+
+24 The degree to which an Organism survives, reproduces, and expands its range at the given place and time.
+
+Values are aligned to the GBIF DegreeOfEstablishment vocabulary,which is derived from the Darwin Core DegreeOfEstablishment vocabulary.
+
+pathway
+	
+
+Structure with string .concept and string array .lineage
+	
+
+Yes
+	
+
+24 The process by which an Organism came to be in a given place at a given time.
+
+Values are aligned to the GBIF Pathway vocabulary,which is derived from the Darwin Core Pathway vocabulary.
+
+georeferenceverificationstatus
+	
+
+String
+	
+
+Yes
+	
+
+24 A categorical description of the extent to which the georeference has been verified to represent the best possible spatial description for the dcterms:Location of the dwc:Occurrence.
+
+occurrencestatus
+	
+
+String
+	
+
+Yes
+	
+
+24 A statement about the presence or absence of a Taxon at a Location.
+
+For definitions, see the GBIF occurrence status vocabulary.
+
+preparations
+	
+
+String array
+	
+
+Yes
+	
+
+24 A preparation or preservation method for a specimen.
+
+disposition
+	
+
+String
+	
+
+Yes
+	
+
+24 The current state of a dwc:MaterialEntity with respect to a collection.
+
+associatedoccurrences
+	
+
+String
+	
+
+Yes
+	
+
+24 A list (concatenated and separated) of identifiers of other dwc:Occurrence records and their associations to this dwc:Occurrence.
+
+associatedreferences
+	
+
+String
+	
+
+Yes
+	
+
+24 A list (concatenated and separated) of identifiers (publication, bibliographic reference, global unique identifier, URI) of literature associated with the dwc:Occurrence.
+
+associatedsequences
+	
+
+String array
+	
+
+Yes
+	
+
+24 A list (concatenated and separated) of identifiers (publication, global unique identifier, URI) of genetic sequence information associated with the material entity.
+
+associatedtaxa
+	
+
+String
+	
+
+Yes
+	
+
+24 A list (concatenated and separated) of identifiers or names of dwc:Taxon records and the associations of this dwc:Occurrence to each of them.
+
+othercatalognumbers
+	
+
+String array
+	
+
+Yes
+	
+
+24 A list (concatenated and separated) of previous or alternate fully qualified catalogue numbers or other human-used identifiers for the same occurrence, whether in the current or any other data set or collection.
+
+occurrenceremarks
+	
+
+String
+	
+
+Yes
+	
+
+24 Comments or notes about the dwc:Occurrence.
+
+organismid
+	
+
+String
+	
+
+Yes
+	
+
+24 An identifier for the dwc:Organism instance (as opposed to a particular digital record of the dwc:Organism). May be a globally unique identifier or an identifier specific to the data set.
+
+organismname
+	
+
+String
+	
+
+Yes
+	
+
+24 A textual name or label assigned to a dwc:Organism instance.
+
+organismscope
+	
+
+String
+	
+
+Yes
+	
+
+24 A description of the kind of dwc:Organism instance. Can be used to indicate whether the dwc:Organism instance represents a discrete organism or if it represents a particular type of aggregation.
+
+associatedorganisms
+	
+
+String
+	
+
+Yes
+	
+
+24 A list (concatenated and separated) of identifiers of other dwc:Organisms and the associations of this dwc:Organism to each of them.
+
+previousidentifications
+	
+
+String
+	
+
+Yes
+	
+
+24 A list (concatenated and separated) of previous assignments of names to the dwc:Organism.
+
+organismremarks
+	
+
+String
+	
+
+Yes
+	
+
+24 Comments or notes about the dwc:Organism instance.
+
+materialentityid
+	
+
+String
+	
+
+Yes
+	
+
+24 An identifier for a particular instance of a dwc:MaterialEntity.
+
+materialentityremarks
+	
+
+String
+	
+
+Yes
+	
+
+24 Comments or notes about the dwc:MaterialEntity instance.
+
+verbatimlabel
+	
+
+String
+	
+
+Yes
+	
+
+24 The content of this term should include no embellishments, prefixes, headers or other additions made to the text. Abbreviations must not be expanded and supposed misspellings must not be corrected. Lines or breakpoints between blocks of text that could be verified by seeing the original labels or images of them may be used. Examples of material entities include preserved specimens, fossil specimens, and material samples. Best practice is to use UTF-8 for all characters. Best practice is to add comment “verbatimLabel derived from human transcription” in dwc:occurrenceRemarks.
+
+materialsampleid
+	
+
+String
+	
+
+Yes
+	
+
+24 An identifier for the dwc:MaterialSample (as opposed to a particular digital record of the dwc:MaterialSample). In the absence of a persistent global unique identifier, construct one from a combination of identifiers in the record that will most closely make the dwc:materialSampleID globally unique.
+
+eventid
+	
+
+String
+	
+
+Yes
+	
+
+24 An identifier for the set of information associated with a dwc:Event (something that occurs at a place and time). May be a global unique identifier or an identifier specific to the data set.
+
+parenteventid
+	
+
+String
+	
+
+Yes
+	
+
+24 An identifier for the broader dwc:Event that groups this and potentially other dwc:Events.
+
+eventtype
+	
+
+Structure with string .concept and string array .lineage
+	
+
+Yes
+	
+
+24 The type for sampling event records.
+
+fieldnumber
+	
+
+String
+	
+
+Yes
+	
+
+24 An identifier given to the dwc:Event in the field. Often serves as a link between field notes and the dwc:Event.
+
+eventdate
+	
+
+String
+	
+
+Yes
+	
+
+24 The date-time or interval during which a dwc:Event occurred. For occurrences, this is the date-time when the dwc:Event was recorded. Not suitable for a time in a geological context.
+
+eventtime
+	
+
+String
+	
+
+Yes
+	
+
+24 The time or interval during which a dwc:Event occurred.
+
+startdayofyear
+	
+
+String
+	
+
+Yes
+	
+
+24 The latest integer day of the year on which the Event occurred (1 for 1 January, 365 for 31 December, except in a leap year, in which case it is 366).
+
+enddayofyear
+	
+
+String
+	
+
+Yes
+	
+
+24 The earliest integer day of the year on which the Event occurred (1 for 1 January, 365 for 31 December, except in a leap year, in which case it is 366).
+
+year
+	
+
+Integer
+	
+
+Yes
+	
+
+24 The four-digit year in which the event occurred, according to the Common Era calendar.
+
+month
+	
+
+Integer
+	
+
+Yes
+	
+
+24 The integer month in which the Event occurred.
+
+day
+	
+
+Integer
+	
+
+Yes
+	
+
+24 The integer day of the month on which the Event occurred.
+
+verbatimeventdate
+	
+
+String
+	
+
+Yes
+	
+
+24 The verbatim original representation of the date and time information for a dwc:Event.
+
+habitat
+	
+
+String
+	
+
+Yes
+	
+
+24 A category or description of the habitat in which the dwc:Event occurred.
+
+samplingprotocol
+	
+
+String array
+	
+
+Yes
+	
+
+24 The methods or protocols used during an Event, denoted by an IRI.
+
+samplesizevalue
+	
+
+String
+	
+
+Yes
+	
+
+24 A numeric value for a measurement of the size (time duration, length, area, or volume) of a sample in a sampling event.
+
+samplesizeunit
+	
+
+String
+	
+
+Yes
+	
+
+24 The unit of measurement of the size (time duration, length, area, or volume) of a sample in a sampling event.
+
+samplingeffort
+	
+
+String
+	
+
+Yes
+	
+
+24 The amount of effort expended during a dwc:Event.
+
+fieldnotes
+	
+
+String
+	
+
+Yes
+	
+
+24 One of a) an indicator of the existence of, b) a reference to (publication, URI), or c) the text of notes taken in the field about the dwc:Event.
+
+eventremarks
+	
+
+String
+	
+
+Yes
+	
+
+24 Comments or notes about the dwc:Event.
+
+locationid
+	
+
+String
+	
+
+Yes
+	
+
+24 An identifier for the set of dcterms:Location information. May be a global unique identifier or an identifier specific to the data set.
+
+highergeographyid
+	
+
+String
+	
+
+Yes
+	
+
+24 An identifier for the geographic region within which the dcterms:Location occurred.
+
+highergeography
+	
+
+String array
+	
+
+Yes
+	
+
+24 A list (concatenated and separated) of geographic names less specific than the information captured in the dwc:locality term.
+
+continent
+	
+
+String
+	
+
+Yes
+	
+
+24 The continent, based on a 7 continent model described on Wikipedia and the World Geographical Scheme for Recording Plant Distributions (WGSRPD).
+
+In particular this splits the Americas into North and South America with North America including the Caribbean (except Trinidad and Tobago) and reaching down and including Panama.
+
+See the GBIF Continents for the exact divisions.
+
+This is a geographical division. See GBIFRegion for GBIF’s political divisions.
+
+waterbody
+	
+
+String
+	
+
+Yes
+	
+
+24 The name of the water body in which the Location occurs.
+
+islandgroup
+	
+
+String
+	
+
+Yes
+	
+
+24 The name of the island group in which the dcterms:Location occurs.
+
+island
+	
+
+String
+	
+
+Yes
+	
+
+24 The name of the island on or near which the dcterms:Location occurs.
+
+countrycode
+	
+
+String
+	
+
+Yes
+	
+
+24 The 2-letter country code (as per ISO-3166-1) of the country, territory or area in which the occurrence was recorded.
+
+stateprovince
+	
+
+String
+	
+
+Yes
+	
+
+24 The name of the next-smaller administrative region than country (state, province, canton, department, region, etc.) in which the occurrence occurs.
+
+This value is unaltered by GBIF’s processing; see also the GADM fields.
+
+county
+	
+
+String
+	
+
+Yes
+	
+
+24 The full, unabbreviated name of the next smaller administrative region than stateProvince (county, shire, department, etc.) in which the dcterms:Location occurs.
+
+municipality
+	
+
+String
+	
+
+Yes
+	
+
+24 The full, unabbreviated name of the next smaller administrative region than county (city, municipality, etc.) in which the dcterms:Location occurs. Do not use this term for a nearby named place that does not contain the actual dcterms:Location.
+
+locality
+	
+
+String
+	
+
+Yes
+	
+
+24 The specific description of the place.
+
+verbatimlocality
+	
+
+String
+	
+
+Yes
+	
+
+24 The original textual description of the place.
+
+verbatimelevation
+	
+
+String
+	
+
+Yes
+	
+
+24 The original description of the elevation (altitude, usually above sea level) of the Location.
+
+verticaldatum
+	
+
+String
+	
+
+Yes
+	
+
+24 The vertical datum used as the reference upon which the values in the elevation terms are based.
+
+verbatimdepth
+	
+
+String
+	
+
+Yes
+	
+
+24 The original description of the depth below the local surface.
+
+minimumdistanceabovesurfaceinmeters
+	
+
+String
+	
+
+Yes
+	
+
+24 The lesser distance in a range of distance from a reference surface in the vertical direction, in meters. Use positive values for locations above the surface, negative values for locations below. If depth measures are given, the reference surface is the location given by the depth, otherwise the reference surface is the location given by the elevation.
+
+maximumdistanceabovesurfaceinmeters
+	
+
+String
+	
+
+Yes
+	
+
+24 The greater distance in a range of distance from a reference surface in the vertical direction, in meters. Use positive values for locations above the surface, negative values for locations below. If depth measures are given, the reference surface is the location given by the depth, otherwise the reference surface is the location given by the elevation.
+
+locationaccordingto
+	
+
+String
+	
+
+Yes
+	
+
+24 Information about the source of this dcterms:Location information. Could be a publication (gazetteer), institution, or team of individuals.
+
+locationremarks
+	
+
+String
+	
+
+Yes
+	
+
+24 Comments or notes about the dcterms:Location.
+
+decimallatitude
+	
+
+Double
+	
+
+Yes
+	
+
+24 The geographic latitude (in decimal degrees, using the WGS84 datum) of the geographic centre of the location of the occurrence.
+
+decimallongitude
+	
+
+Double
+	
+
+Yes
+	
+
+24 The geographic longitude (in decimal degrees, using the WGS84 datum) of the geographic centre of the location of the occurrence.
+
+coordinateuncertaintyinmeters
+	
+
+Double
+	
+
+Yes
+	
+
+24 The horizontal distance (in metres) from the given decimalLatitude and decimalLongitude describing the smallest circle containing the whole of the Location.
+
+coordinateprecision
+	
+
+Double
+	
+
+Yes
+	
+
+24 A decimal representation of the precision of the coordinates given in the decimalLatitude and decimalLongitude.
+
+pointradiusspatialfit
+	
+
+String
+	
+
+Yes
+	
+
+24 The ratio of the area of the point-radius (dwc:decimalLatitude, dwc:decimalLongitude, dwc:coordinateUncertaintyInMeters) to the area of the true (original, or most specific) spatial representation of the dcterms:Location. Legal values are 0, greater than or equal to 1, or undefined. A value of 1 is an exact match or 100% overlap. A value of 0 should be used if the given point-radius does not completely contain the original representation. The dwc:pointRadiusSpatialFit is undefined (and should be left empty) if the original representation is any geometry without area (e.g., a point or polyline) and without uncertainty and the given georeference is not that same geometry (without uncertainty). If both the original and the given georeference are the same point, the dwc:pointRadiusSpatialFit is 1.
+
+verbatimcoordinatesystem
+	
+
+String
+	
+
+Yes
+	
+
+24 The coordinate format for the dwc:verbatimLatitude and dwc:verbatimLongitude or the dwc:verbatimCoordinates of the dcterms:Location.
+
+verbatimsrs
+	
+
+String
+	
+
+Yes
+	
+
+24 The ellipsoid, geodetic datum, or spatial reference system (SRS) upon which coordinates given in dwc:verbatimLatitude and dwc:verbatimLongitude, or dwc:verbatimCoordinates are based.
+
+footprintwkt
+	
+
+String
+	
+
+Yes
+	
+
+24 A Well-Known Text (WKT) representation of the shape (footprint, geometry) that defines the dcterms:Location. A dcterms:Location may have both a point-radius representation (see dwc:decimalLatitude) and a footprint representation, and they may differ from each other.
+
+footprintsrs
+	
+
+String
+	
+
+Yes
+	
+
+24 The ellipsoid, geodetic datum, or spatial reference system (SRS) upon which the geometry given in dwc:footprintWKT is based.
+
+footprintspatialfit
+	
+
+String
+	
+
+Yes
+	
+
+24 The ratio of the area of the dwc:footprintWKT to the area of the true (original, or most specific) spatial representation of the dcterms:Location. Legal values are 0, greater than or equal to 1, or undefined. A value of 1 is an exact match or 100% overlap. A value of 0 should be used if the given dwc:footprintWKT does not completely contain the original representation. The dwc:footprintSpatialFit is undefined (and should be left empty) if the original representation is any geometry without area (e.g., a point or polyline) and without uncertainty and the given georeference is not that same geometry (without uncertainty). If both the original and the given georeference are the same point, the dwc:footprintSpatialFit is 1.
+
+georeferencedby
+	
+
+String array
+	
+
+Yes
+	
+
+24 A list (concatenated and separated) of names of people, groups, or organizations who determined the georeference (spatial representation) for the dcterms:Location.
+
+georeferenceddate
+	
+
+String
+	
+
+Yes
+	
+
+24 The date on which the dcterms:Location was georeferenced.
+
+georeferenceprotocol
+	
+
+String
+	
+
+Yes
+	
+
+24 A description or reference to the methods used to determine the spatial footprint, coordinates, and uncertainties.
+
+georeferencesources
+	
+
+String
+	
+
+Yes
+	
+
+24 A list (concatenated and separated) of maps, gazetteers, or other resources used to georeference the dcterms:Location, described specifically enough to allow anyone in the future to use the same resources.
+
+georeferenceremarks
+	
+
+String
+	
+
+Yes
+	
+
+24 Comments or notes about the spatial description determination, explaining assumptions made in addition or opposition to the those formalized in the method referred to in dwc:georeferenceProtocol.
+
+geologicalcontextid
+	
+
+String
+	
+
+Yes
+	
+
+24 An identifier for the set of information associated with a dwc:GeologicalContext (the location within a geological context, such as stratigraphy). May be a global unique identifier or an identifier specific to the data set.
+
+earliesteonorlowesteonothem
+	
+
+Structure with string .concept and string array .lineage
+	
+
+Yes
+	
+
+24 The full name of the earliest possible geochronologic eon or lowest chrono-stratigraphic eonothem or the informal name ("Precambrian") attributable to the stratigraphic horizon from which the dwc:MaterialEntity was collected.
+
+latesteonorhighesteonothem
+	
+
+Structure with string .concept and string array .lineage
+	
+
+Yes
+	
+
+24 The full name of the latest possible geochronologic eon or highest chrono-stratigraphic eonothem or the informal name ("Precambrian") attributable to the stratigraphic horizon from which the dwc:MaterialEntity was collected.
+
+earliesteraorlowesterathem
+	
+
+Structure with string .concept and string array .lineage
+	
+
+Yes
+	
+
+24 The full name of the earliest possible geochronologic era or lowest chronostratigraphic erathem attributable to the stratigraphic horizon from which the dwc:MaterialEntity was collected.
+
+latesteraorhighesterathem
+	
+
+Structure with string .concept and string array .lineage
+	
+
+Yes
+	
+
+24 The full name of the latest possible geochronologic era or highest chronostratigraphic erathem attributable to the stratigraphic horizon from which the dwc:MaterialEntity was collected.
+
+earliestperiodorlowestsystem
+	
+
+Structure with string .concept and string array .lineage
+	
+
+Yes
+	
+
+24 The full name of the earliest possible geochronologic period or lowest chronostratigraphic system attributable to the stratigraphic horizon from which the dwc:MaterialEntity was collected.
+
+latestperiodorhighestsystem
+	
+
+Structure with string .concept and string array .lineage
+	
+
+Yes
+	
+
+24 The full name of the latest possible geochronologic period or highest chronostratigraphic system attributable to the stratigraphic horizon from which the dwc:MaterialEntity was collected.
+
+earliestepochorlowestseries
+	
+
+Structure with string .concept and string array .lineage
+	
+
+Yes
+	
+
+24 The full name of the earliest possible geochronologic epoch or lowest chronostratigraphic series attributable to the stratigraphic horizon from which the dwc:MaterialEntity was collected.
+
+latestepochorhighestseries
+	
+
+Structure with string .concept and string array .lineage
+	
+
+Yes
+	
+
+24 The full name of the latest possible geochronologic epoch or highest chronostratigraphic series attributable to the stratigraphic horizon from which the dwc:MaterialEntity was collected.
+
+earliestageorloweststage
+	
+
+Structure with string .concept and string array .lineage
+	
+
+Yes
+	
+
+24 The full name of the earliest possible geochronologic age or lowest chronostratigraphic stage attributable to the stratigraphic horizon from which the dwc:MaterialEntity was collected.
+
+latestageorhigheststage
+	
+
+Structure with string .concept and string array .lineage
+	
+
+Yes
+	
+
+24 The full name of the latest possible geochronologic age or highest chronostratigraphic stage attributable to the stratigraphic horizon from which the dwc:MaterialEntity was collected.
+
+lowestbiostratigraphiczone
+	
+
+String
+	
+
+Yes
+	
+
+24 The full name of the lowest possible geological biostratigraphic zone of the stratigraphic horizon from which the dwc:MaterialEntity was collected.
+
+highestbiostratigraphiczone
+	
+
+String
+	
+
+Yes
+	
+
+24 The full name of the highest possible geological biostratigraphic zone of the stratigraphic horizon from which the dwc:MaterialEntity was collected.
+
+lithostratigraphicterms
+	
+
+String
+	
+
+Yes
+	
+
+24 The combination of all lithostratigraphic names for the rock from which the dwc:MaterialEntity was collected.
+
+group
+	
+
+String
+	
+
+Yes
+	
+
+24 The full name of the lithostratigraphic group from which the dwc:MaterialEntity was collected.
+
+formation
+	
+
+String
+	
+
+Yes
+	
+
+24 The full name of the lithostratigraphic formation from which the dwc:MaterialEntity was collected.
+
+member
+	
+
+String
+	
+
+Yes
+	
+
+24 The full name of the lithostratigraphic member from which the dwc:MaterialEntity was collected.
+
+bed
+	
+
+String
+	
+
+Yes
+	
+
+24 The full name of the lithostratigraphic bed from which the dwc:MaterialEntity was collected.
+
+identificationid
+	
+
+String
+	
+
+Yes
+	
+
+24 An identifier for the dwc:Identification (the body of information associated with the assignment of a scientific name). May be a global unique identifier or an identifier specific to the data set.
+
+verbatimidentification
+	
+
+String
+	
+
+Yes
+	
+
+24 A string representing the taxonomic identification as it appeared in the original record.
+
+identificationqualifier
+	
+
+String
+	
+
+Yes
+	
+
+24 A brief phrase or a standard term ("cf.", "aff.") to express the determiner’s doubts about the dwc:Identification.
+
+typestatus
+	
+
+STRUCT<concepts: ARRAY<STRING>,lineage: ARRAY<STRING>>
+	
+
+Yes
+	
+
+24 A list (concatenated and separated) of nomenclatural types (type status, typified scientific name, publication) applied to the occurrence.
+
+identifiedby
+	
+
+String array
+	
+
+Yes
+	
+
+24 A list (concatenated and separated) of names of people, groups, or organizations who assigned the Taxon to the occurrence.
+
+identifiedbyid
+	
+
+String array
+	
+
+Yes
+	
+
+24 A list (concatenated and separated) of the globally unique identifier for the person, people, groups, or organizations responsible for assigning the dwc:Taxon to the subject.
+
+dateidentified
+	
+
+Timestamp
+	
+
+Yes
+	
+
+24 The date on which the subject was determined as representing the Taxon.
+
+identificationreferences
+	
+
+String
+	
+
+Yes
+	
+
+24 A list (concatenated and separated) of references (publication, global unique identifier, URI) used in the dwc:Identification.
+
+identificationverificationstatus
+	
+
+String
+	
+
+Yes
+	
+
+24 A categorical indicator of the extent to which the taxonomic identification has been verified to be correct.
+
+identificationremarks
+	
+
+String
+	
+
+Yes
+	
+
+24 Comments or notes about the dwc:Identification.
+
+taxonid
+	
+
+String
+	
+
+Yes
+	
+
+24 An identifier for the set of dwc:Taxon information. May be a global unique identifier or an identifier specific to the data set.
+
+scientificnameid
+	
+
+String
+	
+
+Yes
+	
+
+24 An identifier for the nomenclatural (not taxonomic) details of a scientific name.
+
+acceptednameusageid
+	
+
+String
+	
+
+Yes
+	
+
+24 An identifier for the name usage (documented meaning of the name according to a source) of the currently valid (zoological) or accepted (botanical) taxon.
+
+parentnameusageid
+	
+
+String
+	
+
+Yes
+	
+
+24 An identifier for the name usage (documented meaning of the name according to a source) of the direct, most proximate higher-rank parent taxon (in a classification) of the most specific element of the dwc:scientificName.
+
+originalnameusageid
+	
+
+String
+	
+
+Yes
+	
+
+24 An identifier for the name usage (documented meaning of the name according to a source) in which the terminal element of the dwc:scientificName was originally established under the rules of the associated dwc:nomenclaturalCode.
+
+nameaccordingtoid
+	
+
+String
+	
+
+Yes
+	
+
+24 An identifier for the source in which the specific taxon concept circumscription is defined or implied. See dwc:nameAccordingTo.
+
+namepublishedinid
+	
+
+String
+	
+
+Yes
+	
+
+24 An identifier for the publication in which the dwc:scientificName was originally established under the rules of the associated dwc:nomenclaturalCode.
+
+taxonconceptid
+	
+
+String
+	
+
+Yes
+	
+
+24 An identifier for the taxonomic concept to which the record refers - not for the nomenclatural details of a dwc:Taxon.
+
+scientificname
+	
+
+String
+	
+
+Yes
+	
+
+24 The scientific name (including authorship) for the taxon from the GBIF backbone matched to this occurrence. This could be a synonym, see also acceptedScientificName.
+
+acceptednameusage
+	
+
+String
+	
+
+Yes
+	
+
+24 The full name, with authorship and date information if known, of the currently valid (zoological) or accepted (botanical) dwc:Taxon.
+
+parentnameusage
+	
+
+String
+	
+
+Yes
+	
+
+24 The full name, with authorship and date information if known, of the direct, most proximate higher-rank parent dwc:Taxon (in a classification) of the most specific element of the dwc:scientificName.
+
+originalnameusage
+	
+
+String
+	
+
+Yes
+	
+
+24 The taxon name, with authorship and date information if known, as it originally appeared when first established under the rules of the associated dwc:nomenclaturalCode. The basionym (botany) or basonym (bacteriology) of the dwc:scientificName or the senior/earlier homonym for replaced names.
+
+nameaccordingto
+	
+
+String
+	
+
+Yes
+	
+
+24 The reference to the source in which the specific taxon concept circumscription is defined or implied - traditionally signified by the Latin "sensu" or "sec." (from secundum, meaning "according to"). For taxa that result from identifications, a reference to the keys, monographs, experts and other sources should be given.
+
+namepublishedin
+	
+
+String
+	
+
+Yes
+	
+
+24 A reference for the publication in which the dwc:scientificName was originally established under the rules of the associated dwc:nomenclaturalCode.
+
+namepublishedinyear
+	
+
+String
+	
+
+Yes
+	
+
+24 The four-digit year in which the dwc:scientificName was published.
+
+higherclassification
+	
+
+String
+	
+
+Yes
+	
+
+24 A list (concatenated and separated) of taxa names terminating at the rank immediately superior to the referenced dwc:Taxon.
+
+kingdom
+	
+
+String
+	
+
+Yes
+	
+
+24 The kingdom name (excluding authorship) for the kingdom from the GBIF backbone matched to this occurrence.
+
+phylum
+	
+
+String
+	
+
+Yes
+	
+
+24 The phylum name (excluding authorship) for the phylum from the GBIF backbone matched to this occurrence.
+
+class
+	
+
+String
+	
+
+Yes
+	
+
+24 The class name (excluding authorship) for the class from the GBIF backbone matched to this occurrence.
+
+order
+	
+
+String
+	
+
+Yes
+	
+
+24 The order name (excluding authorship) for the order from the GBIF backbone matched to this occurrence.
+
+superfamily
+	
+
+String
+	
+
+Yes
+	
+
+24 The full scientific name of the superfamily in which the dwc:Taxon is classified.
+
+family
+	
+
+String
+	
+
+Yes
+	
+
+24 The family name (excluding authorship) for the family from the GBIF backbone matched to this occurrence.
+
+subfamily
+	
+
+String
+	
+
+Yes
+	
+
+24 The full scientific name of the subfamily in which the dwc:Taxon is classified.
+
+tribe
+	
+
+String
+	
+
+Yes
+	
+
+24 The full scientific name of the tribe in which the dwc:Taxon is classified.
+
+subtribe
+	
+
+String
+	
+
+Yes
+	
+
+24 The full scientific name of the subtribe in which the dwc:Taxon is classified.
+
+genus
+	
+
+String
+	
+
+Yes
+	
+
+24 The genus name (excluding authorship) for the genus from the GBIF backbone matched to this occurrence.
+
+genericname
+	
+
+String
+	
+
+Yes
+	
+
+24 The genus name part of the species name from the GBIF backbone matched to this occurrence.
+
+subgenus
+	
+
+String
+	
+
+Yes
+	
+
+24 The subgenus name (excluding authorship) for the subgenus from the GBIF backbone matched to this occurrence.
+
+infragenericepithet
+	
+
+String
+	
+
+Yes
+	
+
+24 The infrageneric part of a binomial name at ranks above species but below genus.
+
+specificepithet
+	
+
+String
+	
+
+Yes
+	
+
+24 The specific name part of the species name from the GBIF backbone matched to this occurrence.
+
+infraspecificepithet
+	
+
+String
+	
+
+Yes
+	
+
+24 The infraspecific name part of the species name from the GBIF backbone matched to this occurrence.
+
+cultivarepithet
+	
+
+String
+	
+
+Yes
+	
+
+24 Part of the name of a cultivar, cultivar group or grex that follows the dwc:scientificName.
+
+taxonrank
+	
+
+String
+	
+
+Yes
+	
+
+24 The taxonomic rank of the most specific name in the scientificName.
+
+verbatimtaxonrank
+	
+
+String
+	
+
+Yes
+	
+
+24 The taxonomic rank of the most specific name in the dwc:scientificName as it appears in the original record.
+
+vernacularname
+	
+
+String
+	
+
+Yes
+	
+
+24 A common or vernacular name.
+
+nomenclaturalcode
+	
+
+String
+	
+
+Yes
+	
+
+24 The nomenclatural code (or codes in the case of an ambiregnal name) under which the dwc:scientificName is constructed.
+
+taxonomicstatus
+	
+
+String
+	
+
+Yes
+	
+
+24 The status of the use of the scientificName as a label for a taxon.
+
+nomenclaturalstatus
+	
+
+String
+	
+
+Yes
+	
+
+24 The status related to the original publication of the name and its conformance to the relevant rules of nomenclature. It is based essentially on an algorithm according to the business rules of the code. It requires no taxonomic opinion.
+
+taxonremarks
+	
+
+String
+	
+
+Yes
+	
+
+24 Comments or notes about the taxon or name.
+
+datasetkey
+	
+
+String
+	
+
+No
+	
+
+24 The UUID of the GBIF dataset containing this occurrence.
+
+publishingcountry
+	
+
+String
+	
+
+Yes
+	
+
+24 The country, territory or island based on ISO-3166 of the organization publishing the dataset containing this occurrence.
+
+lastinterpreted
+	
+
+Timestamp
+	
+
+Yes
+	
+
+24 The time this occurrence was last processed by GBIF’s interpretation system “Pipelines”.
+
+This is the time the record was last changed in GBIF, not the time the record was last changed by the publisher. Data is also reprocessed when we changed the taxonomic backbone, geographic data sources or other interpretation procedures.
+
+An earlier interpretation system distinguished between “parsing” and “interpretation”, but in the current system there is only one process — the two dates will always be the same.
+
+elevation
+	
+
+Double
+	
+
+Yes
+	
+
+24 Elevation (altitude) in metres above sea level. This is not a current Darwin Core term.
+
+elevationaccuracy
+	
+
+Double
+	
+
+Yes
+	
+
+24 The value of the potential error associated with the elevation. This is not a current Darwin Core term.
+
+depth
+	
+
+Double
+	
+
+Yes
+	
+
+24 Depth in metres below sea level. This is not a current Darwin Core term.
+
+depthaccuracy
+	
+
+Double
+	
+
+Yes
+	
+
+24 The value of the potential error associated with the depth. This is not a current Darwin Core term.
+
+distancefromcentroidinmeters
+	
+
+Double
+	
+
+Yes
+	
+
+24 The distance in metres of the occurrence from a centroid known to be applied to occurrences during georeferencing. This can potentially indicate low-precision georeferencing, check the values of coordinateUncertaintyInMeters and georeferenceRemarks.
+
+issue
+	
+
+String array
+	
+
+Yes
+	
+
+24 A specific interpretation issue found during processing and interpretation of the record.
+
+See the list of occurrence issues and the OccurrenceIssue enumeration for possible values and definitions.
+
+taxonomicissue
+	
+
+String
+	
+
+Yes
+	
+
+–
+
+nontaxonomicissue
+	
+
+String
+	
+
+Yes
+	
+
+–
+
+mediatype
+	
+
+String array
+	
+
+Yes
+	
+
+24 The media type given as Dublin Core type values, in particular StillImage, MovingImage or Sound.
+
+hascoordinate
+	
+
+Boolean
+	
+
+Yes
+	
+
+24 Boolean indicating that a valid latitude and longitude exists.
+
+hasgeospatialissues
+	
+
+Boolean
+	
+
+Yes
+	
+
+24 Boolean indicating that some spatial validation rule has not passed.
+
+taxonkey
+	
+
+Integer
+	
+
+Yes
+	
+
+24 A taxon key from the GBIF backbone for the most specific (lowest rank) taxon for this occurrence. This could be a synonym, see acceptedTaxonKey.
+
+acceptedtaxonkey
+	
+
+Integer
+	
+
+Yes
+	
+
+24 A taxon key from the GBIF backbone for the accepted taxon of this occurrence.
+
+kingdomkey
+	
+
+Integer
+	
+
+Yes
+	
+
+24 A taxon key from the GBIF backbone for the kingdom of thisoccurrence.
+
+phylumkey
+	
+
+Integer
+	
+
+Yes
+	
+
+24 A taxon key from the GBIF backbone for the phylum of thisoccurrence.
+
+classkey
+	
+
+Integer
+	
+
+Yes
+	
+
+24 A taxon key from the GBIF backbone for the class of thisoccurrence.
+
+orderkey
+	
+
+Integer
+	
+
+Yes
+	
+
+24 A taxon key from the GBIF backbone for the order of thisoccurrence.
+
+familykey
+	
+
+Integer
+	
+
+Yes
+	
+
+24 A taxon key from the GBIF backbone for the family of thisoccurrence.
+
+genuskey
+	
+
+Integer
+	
+
+Yes
+	
+
+24 A taxon key from the GBIF backbone for the genus of thisoccurrence.
+
+subgenuskey
+	
+
+Integer
+	
+
+Yes
+	
+
+24 A taxon key from the GBIF backbone for the subgenus of thisoccurrence.
+
+specieskey
+	
+
+Integer
+	
+
+Yes
+	
+
+24 A taxon key from the GBIF backbone for the species of thisoccurrence.
+
+species
+	
+
+String
+	
+
+Yes
+	
+
+24 The species name (excluding authorship) for the species from the GBIF backbone matched to this occurrence.
+
+acceptedscientificname
+	
+
+String
+	
+
+Yes
+	
+
+24 The accepted scientific name (including authorship) for the taxon from the GBIF backbone matched to this occurrence.
+
+typifiedname
+	
+
+String
+	
+
+Yes
+	
+
+24 The scientific name that is based on the type specimen.
+
+This is not yet a Darwin Core term, see the proposal to add it.
+
+protocol
+	
+
+String
+	
+
+Yes
+	
+
+24 The technical protocol by which this occurrence was retrieved from the publisher’s systems.
+
+lastparsed
+	
+
+Timestamp
+	
+
+Yes
+	
+
+24 The time this occurrence was last processed by GBIF’s interpretation system “Pipelines”.
+
+This is the time the record was last changed in GBIF, not the time the record was last changed by the publisher. Data is also reprocessed when we changed the taxonomic backbone, geographic data sources or other interpretation procedures.
+
+An earlier interpretation system distinguished between “parsing” and “interpretation”, but in the current system there is only one process — the two dates will always be the same.
+
+lastcrawled
+	
+
+Timestamp
+	
+
+Yes
+	
+
+24 The time this occurrence was last retrieved from the publisher’s systems.
+
+isinvasive
+	
+
+String
+	
+
+Yes
+	
+
+–
+
+repatriated
+	
+
+String
+	
+
+Yes
+	
+
+24 Boolean indicating if the publishing country is different to the location country.
+
+relativeorganismquantity
+	
+
+String
+	
+
+Yes
+	
+
+24 The relative measurement of the quantity of the organism (i.e. without absolute units).
+
+projectid
+	
+
+String array
+	
+
+Yes
+	
+
+24 Identifiers for projects related to this occurrence.
+
+issequenced
+	
+
+String
+	
+
+Yes
+	
+
+24 Flag occurrence when associatedSequences/extension exists
+
+gbifregion
+	
+
+String
+	
+
+Yes
+	
+
+24 An enumeration for all GBIF Regions. These are based on IPBES regions.
+
+This is a political division, part of GBIF’s governance structure.
+
+publishedbygbifregion
+	
+
+String
+	
+
+Yes
+	
+
+24 An enumeration for all GBIF Regions. These are based on IPBES regions.
+
+This is a political division, part of GBIF’s governance structure.
+
+level0gid
+	
+
+String
+	
+
+Yes
+	
+
+24 The identifier for the top-level division from the GADM database. This is usually a three-letter code from ISO 3166.
+
+level0name
+	
+
+String
+	
+
+Yes
+	
+
+24 The English name for the top-level division from the GADM database.
+
+level1gid
+	
+
+String
+	
+
+Yes
+	
+
+24 The identifier for the first-level division from the GADM database.
+
+level1name
+	
+
+String
+	
+
+Yes
+	
+
+24 The English name for the first-level division from the GADM database.
+
+level2gid
+	
+
+String
+	
+
+Yes
+	
+
+24 The identifier for the second-level division from the GADM database.
+
+level2name
+	
+
+String
+	
+
+Yes
+	
+
+24 The English name for the second-level division from the GADM database.
+
+level3gid
+	
+
+String
+	
+
+Yes
+	
+
+24 The identifier for the third-level division from the GADM database.
+
+level3name
+	
+
+String
+	
+
+Yes
+	
+
+24 The English name for the third-level division from the GADM database.
+
+iucnredlistcategory
+	
+
+String
+	
+
+Yes
+	
+
+24 The IUCN Red List Category of the taxon of this occurrence.
+
+See the GBIF vocabulary for the values and their definitions, and the IUCN Red List of Threatened Species dataset in GBIF for the version of the Red List GBIF’s interpretation procedures are using.
+
+publishingorgkey
+	
+
+String
+	
+
+Yes
+	
+
+24 The UUID of the organization which publishes the dataset containing this occurrence.
+
+installationkey
+	
+
+String
+	
+
+Yes
+	
+
+24 The UUID of the technical installation hosted the dataset containing this occurrence.
+
+institutionkey
+	
+
+String
+	
+
+Yes
+	
+
+24 Experimental. The UUID of the institution holding the specimen occurrence, from GRSciColl.
+
+collectionkey
+	
+
+String
+	
+
+Yes
+	
+
+24 Experimental. The UUID of the collection containing the specimen occurrence, from GRSciColl.
+
+programmeacronym
+	
+
+String
+	
+
+Yes
+	
+
+24 The identifier for a programme which funded the digitization of this occurrence.
+
+hostingorganizationkey
+	
+
+String
+	
+
+Yes
+	
+
+24 The UUID of the publishing organization which operates the technical installation hosting the dataset containing this occurrence.
+
+isincluster
+	
+
+String
+	
+
+Yes
+	
+
+24 Experimental. Whether the occurrence belongs to a machine-calculated cluster of probable duplicate occurrences.
+
+dwcaextension
+	
+
+String array
+	
+
+Yes
+	
+
+24 The list of Darwin Core extensions present on the occurrence record.
+
+eventdategte
+	
+
+Timestamp
+	
+
+Yes
+	
+
+24 Experimental The lower bound for the eventDate term as a timestamp, 2000-01-01T00:00:00 for an event date of 2000.
+
+eventdatelte
+	
+
+Timestamp
+	
+
+Yes
+	
+
+24 Experimental The upper bound for the eventDate term as a timestamp, 2000-12-31T23:59:59 for an event date of 2000.
+
+v_accessrights
+	
+
+String
+	
+
+Yes
+	
+
+24 Information about who can access the resource or an indication of its security status.
+
+v_bibliographiccitation
+	
+
+String
+	
+
+Yes
+	
+
+24 A bibliographic reference for the resource.
+
+v_language
+	
+
+String
+	
+
+Yes
+	
+
+24 A language of the resource.
+
+v_license
+	
+
+String
+	
+
+Yes
+	
+
+24 A legal document giving official permission to do something with the resource.
+
+v_modified
+	
+
+String
+	
+
+Yes
+	
+
+24 Date on which the resource was changed.
+
+v_publisher
+	
+
+String
+	
+
+Yes
+	
+
+24 An entity responsible for making the image available.
+
+v_references
+	
+
+String
+	
+
+Yes
+	
+
+24 A related resource that is referenced, cited, or otherwise pointed to by the described resource.
+
+v_rightsholder
+	
+
+String
+	
+
+Yes
+	
+
+24 A person or organization owning or managing rights over the resource.
+
+v_type
+	
+
+String
+	
+
+Yes
+	
+
+24 The nature or genre of the resource.
+
+v_institutionid
+	
+
+String
+	
+
+Yes
+	
+
+24 An identifier for the institution having custody of the object(s) or information referred to in the record.
+
+v_collectionid
+	
+
+String
+	
+
+Yes
+	
+
+24 An identifier for the collection or dataset from which the record was derived.
+
+v_datasetid
+	
+
+String
+	
+
+Yes
+	
+
+24 An identifier for the set of data. May be a global unique identifier or an identifier specific to a collection or institution.
+
+v_institutioncode
+	
+
+String
+	
+
+Yes
+	
+
+24 The name (or acronym) in use by the institution having custody of the object(s) or information referred to in the record.
+
+v_collectioncode
+	
+
+String
+	
+
+Yes
+	
+
+24 The name, acronym, coden, or initialism identifying the collection or data set from which the record was derived.
+
+v_datasetname
+	
+
+String
+	
+
+Yes
+	
+
+24 The name identifying the data set from which the record was derived.
+
+v_ownerinstitutioncode
+	
+
+String
+	
+
+Yes
+	
+
+24 The name (or acronym) in use by the institution having ownership of the object(s) or information referred to in the record.
+
+v_basisofrecord
+	
+
+String
+	
+
+Yes
+	
+
+24 The specific nature of the data record.
+
+v_informationwithheld
+	
+
+String
+	
+
+Yes
+	
+
+24 Additional information that exists, but that has not been shared in the given record.
+
+v_datageneralizations
+	
+
+String
+	
+
+Yes
+	
+
+24 Actions taken to make the shared data less specific or complete than in its original form. Suggests that alternative data of higher quality may be available on request.
+
+v_dynamicproperties
+	
+
+String
+	
+
+Yes
+	
+
+24 A list of additional measurements, facts, characteristics, or assertions about the record. Meant to provide a mechanism for structured content.
+
+v_occurrenceid
+	
+
+String
+	
+
+Yes
+	
+
+24 An identifier for the dwc:Occurrence (as opposed to a particular digital record of the dwc:Occurrence). In the absence of a persistent global unique identifier, construct one from a combination of identifiers in the record that will most closely make the dwc:occurrenceID globally unique.
+
+v_catalognumber
+	
+
+String
+	
+
+Yes
+	
+
+24 An identifier (preferably unique) for the record within the data set or collection.
+
+v_recordnumber
+	
+
+String
+	
+
+Yes
+	
+
+24 An identifier given to the dwc:Occurrence at the time it was recorded. Often serves as a link between field notes and a dwc:Occurrence record, such as a specimen collector’s number.
+
+v_recordedby
+	
+
+String
+	
+
+Yes
+	
+
+24 A list (concatenated and separated) of names of people, groups, or organizations responsible for recording the original dwc:Occurrence. The primary collector or observer, especially one who applies a personal identifier (dwc:recordNumber), should be listed first.
+
+v_recordedbyid
+	
+
+String
+	
+
+Yes
+	
+
+24 A list (concatenated and separated) of the globally unique identifier for the person, people, groups, or organizations responsible for recording the original dwc:Occurrence.
+
+v_individualcount
+	
+
+String
+	
+
+Yes
+	
+
+24 The number of individuals present at the time of the dwc:Occurrence.
+
+v_organismquantity
+	
+
+String
+	
+
+Yes
+	
+
+24 A number or enumeration value for the quantity of dwc:Organisms.
+
+v_organismquantitytype
+	
+
+String
+	
+
+Yes
+	
+
+24 The type of quantification system used for the quantity of dwc:Organisms.
+
+v_sex
+	
+
+String
+	
+
+Yes
+	
+
+24 The sex of the biological individual(s) represented in the dwc:Occurrence.
+
+v_lifestage
+	
+
+String
+	
+
+Yes
+	
+
+24 The age class or life stage of the dwc:Organism(s) at the time the dwc:Occurrence was recorded.
+
+v_reproductivecondition
+	
+
+String
+	
+
+Yes
+	
+
+24 The reproductive condition of the biological individual(s) represented in the dwc:Occurrence.
+
+v_caste
+	
+
+String
+	
+
+Yes
+	
+
+24 Categorisation of individuals for eusocial species (including some mammals and arthropods).
+
+v_behavior
+	
+
+String
+	
+
+Yes
+	
+
+24 The behavior shown by the subject at the time the dwc:Occurrence was recorded.
+
+v_vitality
+	
+
+String
+	
+
+Yes
+	
+
+24 An indication of whether a dwc:Organism was alive or dead at the time of collection or observation.
+
+v_establishmentmeans
+	
+
+String
+	
+
+Yes
+	
+
+24 Statement about whether a dwc:Organism has been introduced to a given place and time through the direct or indirect activity of modern humans.
+
+v_degreeofestablishment
+	
+
+String
+	
+
+Yes
+	
+
+24 The degree to which a dwc:Organism survives, reproduces, and expands its range at the given place and time.
+
+v_pathway
+	
+
+String
+	
+
+Yes
+	
+
+24 The process by which a dwc:Organism came to be in a given place at a given time.
+
+v_georeferenceverificationstatus
+	
+
+String
+	
+
+Yes
+	
+
+24 A categorical description of the extent to which the georeference has been verified to represent the best possible spatial description for the dcterms:Location of the dwc:Occurrence.
+
+v_occurrencestatus
+	
+
+String
+	
+
+Yes
+	
+
+24 A statement about the presence or absence of a dwc:Taxon at a dcterms:Location.
+
+v_preparations
+	
+
+String
+	
+
+Yes
+	
+
+24 A list (concatenated and separated) of preparations and preservation methods for a dwc:MaterialEntity.
+
+v_disposition
+	
+
+String
+	
+
+Yes
+	
+
+24 The current state of a dwc:MaterialEntity with respect to a collection.
+
+v_associatedmedia
+	
+
+String
+	
+
+Yes
+	
+
+24 A list (concatenated and separated) of identifiers (publication, global unique identifier, URI) of media associated with the dwc:Occurrence.
+
+v_associatedoccurrences
+	
+
+String
+	
+
+Yes
+	
+
+24 A list (concatenated and separated) of identifiers of other dwc:Occurrence records and their associations to this dwc:Occurrence.
+
+v_associatedreferences
+	
+
+String
+	
+
+Yes
+	
+
+24 A list (concatenated and separated) of identifiers (publication, bibliographic reference, global unique identifier, URI) of literature associated with the dwc:Occurrence.
+
+v_associatedsequences
+	
+
+String
+	
+
+Yes
+	
+
+24 A list (concatenated and separated) of identifiers (publication, global unique identifier, URI) of genetic sequence information associated with the dwc:MaterialEntity.
+
+v_associatedtaxa
+	
+
+String
+	
+
+Yes
+	
+
+24 A list (concatenated and separated) of identifiers or names of dwc:Taxon records and the associations of this dwc:Occurrence to each of them.
+
+v_othercatalognumbers
+	
+
+String
+	
+
+Yes
+	
+
+24 A list (concatenated and separated) of previous or alternate fully qualified catalog numbers or other human-used identifiers for the same dwc:Occurrence, whether in the current or any other data set or collection.
+
+v_occurrenceremarks
+	
+
+String
+	
+
+Yes
+	
+
+24 Comments or notes about the dwc:Occurrence.
+
+v_organismid
+	
+
+String
+	
+
+Yes
+	
+
+24 An identifier for the dwc:Organism instance (as opposed to a particular digital record of the dwc:Organism). May be a globally unique identifier or an identifier specific to the data set.
+
+v_organismname
+	
+
+String
+	
+
+Yes
+	
+
+24 A textual name or label assigned to a dwc:Organism instance.
+
+v_organismscope
+	
+
+String
+	
+
+Yes
+	
+
+24 A description of the kind of dwc:Organism instance. Can be used to indicate whether the dwc:Organism instance represents a discrete organism or if it represents a particular type of aggregation.
+
+v_associatedorganisms
+	
+
+String
+	
+
+Yes
+	
+
+24 A list (concatenated and separated) of identifiers of other dwc:Organisms and the associations of this dwc:Organism to each of them.
+
+v_previousidentifications
+	
+
+String
+	
+
+Yes
+	
+
+24 A list (concatenated and separated) of previous assignments of names to the dwc:Organism.
+
+v_organismremarks
+	
+
+String
+	
+
+Yes
+	
+
+24 Comments or notes about the dwc:Organism instance.
+
+v_materialentityid
+	
+
+String
+	
+
+Yes
+	
+
+24 An identifier for a particular instance of a dwc:MaterialEntity.
+
+v_materialentityremarks
+	
+
+String
+	
+
+Yes
+	
+
+24 Comments or notes about the dwc:MaterialEntity instance.
+
+v_verbatimlabel
+	
+
+String
+	
+
+Yes
+	
+
+24 The content of this term should include no embellishments, prefixes, headers or other additions made to the text. Abbreviations must not be expanded and supposed misspellings must not be corrected. Lines or breakpoints between blocks of text that could be verified by seeing the original labels or images of them may be used. Examples of material entities include preserved specimens, fossil specimens, and material samples. Best practice is to use UTF-8 for all characters. Best practice is to add comment “verbatimLabel derived from human transcription” in dwc:occurrenceRemarks.
+
+v_materialsampleid
+	
+
+String
+	
+
+Yes
+	
+
+24 An identifier for the dwc:MaterialSample (as opposed to a particular digital record of the dwc:MaterialSample). In the absence of a persistent global unique identifier, construct one from a combination of identifiers in the record that will most closely make the dwc:materialSampleID globally unique.
+
+v_eventid
+	
+
+String
+	
+
+Yes
+	
+
+24 An identifier for the set of information associated with a dwc:Event (something that occurs at a place and time). May be a global unique identifier or an identifier specific to the data set.
+
+v_parenteventid
+	
+
+String
+	
+
+Yes
+	
+
+24 An identifier for the broader dwc:Event that groups this and potentially other dwc:Events.
+
+v_eventtype
+	
+
+String
+	
+
+Yes
+	
+
+24 The nature of the dwc:Event.
+
+v_fieldnumber
+	
+
+String
+	
+
+Yes
+	
+
+24 An identifier given to the dwc:Event in the field. Often serves as a link between field notes and the dwc:Event.
+
+v_eventdate
+	
+
+String
+	
+
+Yes
+	
+
+24 The date-time or interval during which a dwc:Event occurred. For occurrences, this is the date-time when the dwc:Event was recorded. Not suitable for a time in a geological context.
+
+v_eventtime
+	
+
+String
+	
+
+Yes
+	
+
+24 The time or interval during which a dwc:Event occurred.
+
+v_startdayofyear
+	
+
+String
+	
+
+Yes
+	
+
+24 The earliest integer day of the year on which the dwc:Event occurred (1 for January 1, 365 for December 31, except in a leap year, in which case it is 366).
+
+v_enddayofyear
+	
+
+String
+	
+
+Yes
+	
+
+24 The latest integer day of the year on which the dwc:Event occurred (1 for January 1, 365 for December 31, except in a leap year, in which case it is 366).
+
+v_year
+	
+
+String
+	
+
+Yes
+	
+
+24 The four-digit year in which the dwc:Event occurred, according to the Common Era Calendar.
+
+v_month
+	
+
+String
+	
+
+Yes
+	
+
+24 The integer month in which the dwc:Event occurred.
+
+v_day
+	
+
+String
+	
+
+Yes
+	
+
+24 The integer day of the month on which the dwc:Event occurred.
+
+v_verbatimeventdate
+	
+
+String
+	
+
+Yes
+	
+
+24 The verbatim original representation of the date and time information for a dwc:Event.
+
+v_habitat
+	
+
+String
+	
+
+Yes
+	
+
+24 A category or description of the habitat in which the dwc:Event occurred.
+
+v_samplingprotocol
+	
+
+String
+	
+
+Yes
+	
+
+24 The names of, references to, or descriptions of the methods or protocols used during a dwc:Event.
+
+v_samplesizevalue
+	
+
+String
+	
+
+Yes
+	
+
+24 A numeric value for a measurement of the size (time duration, length, area, or volume) of a sample in a sampling dwc:Event.
+
+v_samplesizeunit
+	
+
+String
+	
+
+Yes
+	
+
+24 The unit of measurement of the size (time duration, length, area, or volume) of a sample in a sampling dwc:Event.
+
+v_samplingeffort
+	
+
+String
+	
+
+Yes
+	
+
+24 The amount of effort expended during a dwc:Event.
+
+v_fieldnotes
+	
+
+String
+	
+
+Yes
+	
+
+24 One of a) an indicator of the existence of, b) a reference to (publication, URI), or c) the text of notes taken in the field about the dwc:Event.
+
+v_eventremarks
+	
+
+String
+	
+
+Yes
+	
+
+24 Comments or notes about the dwc:Event.
+
+v_locationid
+	
+
+String
+	
+
+Yes
+	
+
+24 An identifier for the set of dcterms:Location information. May be a global unique identifier or an identifier specific to the data set.
+
+v_highergeographyid
+	
+
+String
+	
+
+Yes
+	
+
+24 An identifier for the geographic region within which the dcterms:Location occurred.
+
+v_highergeography
+	
+
+String
+	
+
+Yes
+	
+
+24 A list (concatenated and separated) of geographic names less specific than the information captured in the dwc:locality term.
+
+v_continent
+	
+
+String
+	
+
+Yes
+	
+
+24 The name of the continent in which the dcterms:Location occurs.
+
+v_waterbody
+	
+
+String
+	
+
+Yes
+	
+
+24 The name of the water body in which the dcterms:Location occurs.
+
+v_islandgroup
+	
+
+String
+	
+
+Yes
+	
+
+24 The name of the island group in which the dcterms:Location occurs.
+
+v_island
+	
+
+String
+	
+
+Yes
+	
+
+24 The name of the island on or near which the dcterms:Location occurs.
+
+v_country
+	
+
+String
+	
+
+Yes
+	
+
+24 The name of the country or major administrative unit in which the dcterms:Location occurs.
+
+v_countrycode
+	
+
+String
+	
+
+Yes
+	
+
+24 The standard code for the country in which the dcterms:Location occurs.
+
+v_stateprovince
+	
+
+String
+	
+
+Yes
+	
+
+24 The name of the next smaller administrative region than country (state, province, canton, department, region, etc.) in which the dcterms:Location occurs.
+
+v_county
+	
+
+String
+	
+
+Yes
+	
+
+24 The full, unabbreviated name of the next smaller administrative region than stateProvince (county, shire, department, etc.) in which the dcterms:Location occurs.
+
+v_municipality
+	
+
+String
+	
+
+Yes
+	
+
+24 The full, unabbreviated name of the next smaller administrative region than county (city, municipality, etc.) in which the dcterms:Location occurs. Do not use this term for a nearby named place that does not contain the actual dcterms:Location.
+
+v_locality
+	
+
+String
+	
+
+Yes
+	
+
+24 The specific description of the place.
+
+v_verbatimlocality
+	
+
+String
+	
+
+Yes
+	
+
+24 The original textual description of the place.
+
+v_minimumelevationinmeters
+	
+
+String
+	
+
+Yes
+	
+
+24 The lower limit of the range of elevation (altitude, usually above sea level), in meters.
+
+v_maximumelevationinmeters
+	
+
+String
+	
+
+Yes
+	
+
+24 The upper limit of the range of elevation (altitude, usually above sea level), in meters.
+
+v_verbatimelevation
+	
+
+String
+	
+
+Yes
+	
+
+24 The original description of the elevation (altitude, usually above sea level) of the Location.
+
+v_verticaldatum
+	
+
+String
+	
+
+Yes
+	
+
+24 The vertical datum used as the reference upon which the values in the elevation terms are based.
+
+v_minimumdepthinmeters
+	
+
+String
+	
+
+Yes
+	
+
+24 The lesser depth of a range of depth below the local surface, in meters.
+
+v_maximumdepthinmeters
+	
+
+String
+	
+
+Yes
+	
+
+24 The greater depth of a range of depth below the local surface, in meters.
+
+v_verbatimdepth
+	
+
+String
+	
+
+Yes
+	
+
+24 The original description of the depth below the local surface.
+
+v_minimumdistanceabovesurfaceinmeters
+	
+
+String
+	
+
+Yes
+	
+
+24 The lesser distance in a range of distance from a reference surface in the vertical direction, in meters. Use positive values for locations above the surface, negative values for locations below. If depth measures are given, the reference surface is the location given by the depth, otherwise the reference surface is the location given by the elevation.
+
+v_maximumdistanceabovesurfaceinmeters
+	
+
+String
+	
+
+Yes
+	
+
+24 The greater distance in a range of distance from a reference surface in the vertical direction, in meters. Use positive values for locations above the surface, negative values for locations below. If depth measures are given, the reference surface is the location given by the depth, otherwise the reference surface is the location given by the elevation.
+
+v_locationaccordingto
+	
+
+String
+	
+
+Yes
+	
+
+24 Information about the source of this dcterms:Location information. Could be a publication (gazetteer), institution, or team of individuals.
+
+v_locationremarks
+	
+
+String
+	
+
+Yes
+	
+
+24 Comments or notes about the dcterms:Location.
+
+v_decimallatitude
+	
+
+String
+	
+
+Yes
+	
+
+24 The geographic latitude (in decimal degrees, using the spatial reference system given in dwc:geodeticDatum) of the geographic center of a dcterms:Location. Positive values are north of the Equator, negative values are south of it. Legal values lie between -90 and 90, inclusive.
+
+v_decimallongitude
+	
+
+String
+	
+
+Yes
+	
+
+24 The geographic longitude (in decimal degrees, using the spatial reference system given in dwc:geodeticDatum) of the geographic center of a dcterms:Location. Positive values are east of the Greenwich Meridian, negative values are west of it. Legal values lie between -180 and 180, inclusive.
+
+v_geodeticdatum
+	
+
+String
+	
+
+Yes
+	
+
+24 The ellipsoid, geodetic datum, or spatial reference system (SRS) upon which the geographic coordinates given in dwc:decimalLatitude and dwc:decimalLongitude are based.
+
+v_coordinateuncertaintyinmeters
+	
+
+String
+	
+
+Yes
+	
+
+24 The horizontal distance (in meters) from the given dwc:decimalLatitude and dwc:decimalLongitude describing the smallest circle containing the whole of the dcterms:Location. Leave the value empty if the uncertainty is unknown, cannot be estimated, or is not applicable (because there are no coordinates). Zero is not a valid value for this term.
+
+v_coordinateprecision
+	
+
+String
+	
+
+Yes
+	
+
+24 A decimal representation of the precision of the coordinates given in the dwc:decimalLatitude and dwc:decimalLongitude.
+
+v_pointradiusspatialfit
+	
+
+String
+	
+
+Yes
+	
+
+24 The ratio of the area of the point-radius (dwc:decimalLatitude, dwc:decimalLongitude, dwc:coordinateUncertaintyInMeters) to the area of the true (original, or most specific) spatial representation of the dcterms:Location. Legal values are 0, greater than or equal to 1, or undefined. A value of 1 is an exact match or 100% overlap. A value of 0 should be used if the given point-radius does not completely contain the original representation. The dwc:pointRadiusSpatialFit is undefined (and should be left empty) if the original representation is any geometry without area (e.g., a point or polyline) and without uncertainty and the given georeference is not that same geometry (without uncertainty). If both the original and the given georeference are the same point, the dwc:pointRadiusSpatialFit is 1.
+
+v_verbatimcoordinates
+	
+
+String
+	
+
+Yes
+	
+
+24 The verbatim original spatial coordinates of the dcterms:Location. The coordinate ellipsoid, geodeticDatum, or full Spatial Reference System (SRS) for these coordinates should be stored in dwc:verbatimSRS and the coordinate system should be stored in dwc:verbatimCoordinateSystem.
+
+v_verbatimlatitude
+	
+
+String
+	
+
+Yes
+	
+
+24 The verbatim original latitude of the dcterms:Location. The coordinate ellipsoid, geodeticDatum, or full Spatial Reference System (SRS) for these coordinates should be stored in dwc:verbatimSRS and the coordinate system should be stored in dwc:verbatimCoordinateSystem.
+
+v_verbatimlongitude
+	
+
+String
+	
+
+Yes
+	
+
+24 The verbatim original longitude of the dcterms:Location. The coordinate ellipsoid, geodeticDatum, or full Spatial Reference System (SRS) for these coordinates should be stored in dwc:verbatimSRS and the coordinate system should be stored in dwc:verbatimCoordinateSystem.
+
+v_verbatimcoordinatesystem
+	
+
+String
+	
+
+Yes
+	
+
+24 The coordinate format for the dwc:verbatimLatitude and dwc:verbatimLongitude or the dwc:verbatimCoordinates of the dcterms:Location.
+
+v_verbatimsrs
+	
+
+String
+	
+
+Yes
+	
+
+24 The ellipsoid, geodetic datum, or spatial reference system (SRS) upon which coordinates given in dwc:verbatimLatitude and dwc:verbatimLongitude, or dwc:verbatimCoordinates are based.
+
+v_footprintwkt
+	
+
+String
+	
+
+Yes
+	
+
+24 A Well-Known Text (WKT) representation of the shape (footprint, geometry) that defines the dcterms:Location. A dcterms:Location may have both a point-radius representation (see dwc:decimalLatitude) and a footprint representation, and they may differ from each other.
+
+v_footprintsrs
+	
+
+String
+	
+
+Yes
+	
+
+24 The ellipsoid, geodetic datum, or spatial reference system (SRS) upon which the geometry given in dwc:footprintWKT is based.
+
+v_footprintspatialfit
+	
+
+String
+	
+
+Yes
+	
+
+24 The ratio of the area of the dwc:footprintWKT to the area of the true (original, or most specific) spatial representation of the dcterms:Location. Legal values are 0, greater than or equal to 1, or undefined. A value of 1 is an exact match or 100% overlap. A value of 0 should be used if the given dwc:footprintWKT does not completely contain the original representation. The dwc:footprintSpatialFit is undefined (and should be left empty) if the original representation is any geometry without area (e.g., a point or polyline) and without uncertainty and the given georeference is not that same geometry (without uncertainty). If both the original and the given georeference are the same point, the dwc:footprintSpatialFit is 1.
+
+v_georeferencedby
+	
+
+String
+	
+
+Yes
+	
+
+24 A list (concatenated and separated) of names of people, groups, or organizations who determined the georeference (spatial representation) for the dcterms:Location.
+
+v_georeferenceddate
+	
+
+String
+	
+
+Yes
+	
+
+24 The date on which the dcterms:Location was georeferenced.
+
+v_georeferenceprotocol
+	
+
+String
+	
+
+Yes
+	
+
+24 A description or reference to the methods used to determine the spatial footprint, coordinates, and uncertainties.
+
+v_georeferencesources
+	
+
+String
+	
+
+Yes
+	
+
+24 A list (concatenated and separated) of maps, gazetteers, or other resources used to georeference the dcterms:Location, described specifically enough to allow anyone in the future to use the same resources.
+
+v_georeferenceremarks
+	
+
+String
+	
+
+Yes
+	
+
+24 Comments or notes about the spatial description determination, explaining assumptions made in addition or opposition to the those formalized in the method referred to in dwc:georeferenceProtocol.
+
+v_geologicalcontextid
+	
+
+String
+	
+
+Yes
+	
+
+24 An identifier for the set of information associated with a dwc:GeologicalContext (the location within a geological context, such as stratigraphy). May be a global unique identifier or an identifier specific to the data set.
+
+v_earliesteonorlowesteonothem
+	
+
+String
+	
+
+Yes
+	
+
+24 The full name of the earliest possible geochronologic eon or lowest chrono-stratigraphic eonothem or the informal name ("Precambrian") attributable to the stratigraphic horizon from which the dwc:MaterialEntity was collected.
+
+v_latesteonorhighesteonothem
+	
+
+String
+	
+
+Yes
+	
+
+24 The full name of the latest possible geochronologic eon or highest chrono-stratigraphic eonothem or the informal name ("Precambrian") attributable to the stratigraphic horizon from which the dwc:MaterialEntity was collected.
+
+v_earliesteraorlowesterathem
+	
+
+String
+	
+
+Yes
+	
+
+24 The full name of the earliest possible geochronologic era or lowest chronostratigraphic erathem attributable to the stratigraphic horizon from which the dwc:MaterialEntity was collected.
+
+v_latesteraorhighesterathem
+	
+
+String
+	
+
+Yes
+	
+
+24 The full name of the latest possible geochronologic era or highest chronostratigraphic erathem attributable to the stratigraphic horizon from which the dwc:MaterialEntity was collected.
+
+v_earliestperiodorlowestsystem
+	
+
+String
+	
+
+Yes
+	
+
+24 The full name of the earliest possible geochronologic period or lowest chronostratigraphic system attributable to the stratigraphic horizon from which the dwc:MaterialEntity was collected.
+
+v_latestperiodorhighestsystem
+	
+
+String
+	
+
+Yes
+	
+
+24 The full name of the latest possible geochronologic period or highest chronostratigraphic system attributable to the stratigraphic horizon from which the dwc:MaterialEntity was collected.
+
+v_earliestepochorlowestseries
+	
+
+String
+	
+
+Yes
+	
+
+24 The full name of the earliest possible geochronologic epoch or lowest chronostratigraphic series attributable to the stratigraphic horizon from which the dwc:MaterialEntity was collected.
+
+v_latestepochorhighestseries
+	
+
+String
+	
+
+Yes
+	
+
+24 The full name of the latest possible geochronologic epoch or highest chronostratigraphic series attributable to the stratigraphic horizon from which the dwc:MaterialEntity was collected.
+
+v_earliestageorloweststage
+	
+
+String
+	
+
+Yes
+	
+
+24 The full name of the earliest possible geochronologic age or lowest chronostratigraphic stage attributable to the stratigraphic horizon from which the dwc:MaterialEntity was collected.
+
+v_latestageorhigheststage
+	
+
+String
+	
+
+Yes
+	
+
+24 The full name of the latest possible geochronologic age or highest chronostratigraphic stage attributable to the stratigraphic horizon from which the dwc:MaterialEntity was collected.
+
+v_lowestbiostratigraphiczone
+	
+
+String
+	
+
+Yes
+	
+
+24 The full name of the lowest possible geological biostratigraphic zone of the stratigraphic horizon from which the dwc:MaterialEntity was collected.
+
+v_highestbiostratigraphiczone
+	
+
+String
+	
+
+Yes
+	
+
+24 The full name of the highest possible geological biostratigraphic zone of the stratigraphic horizon from which the dwc:MaterialEntity was collected.
+
+v_lithostratigraphicterms
+	
+
+String
+	
+
+Yes
+	
+
+24 The combination of all lithostratigraphic names for the rock from which the dwc:MaterialEntity was collected.
+
+v_group
+	
+
+String
+	
+
+Yes
+	
+
+24 The full name of the lithostratigraphic group from which the dwc:MaterialEntity was collected.
+
+v_formation
+	
+
+String
+	
+
+Yes
+	
+
+24 The full name of the lithostratigraphic formation from which the dwc:MaterialEntity was collected.
+
+v_member
+	
+
+String
+	
+
+Yes
+	
+
+24 The full name of the lithostratigraphic member from which the dwc:MaterialEntity was collected.
+
+v_bed
+	
+
+String
+	
+
+Yes
+	
+
+24 The full name of the lithostratigraphic bed from which the dwc:MaterialEntity was collected.
+
+v_identificationid
+	
+
+String
+	
+
+Yes
+	
+
+24 An identifier for the dwc:Identification (the body of information associated with the assignment of a scientific name). May be a global unique identifier or an identifier specific to the data set.
+
+v_verbatimidentification
+	
+
+String
+	
+
+Yes
+	
+
+24 A string representing the taxonomic identification as it appeared in the original record.
+
+v_identificationqualifier
+	
+
+String
+	
+
+Yes
+	
+
+24 A brief phrase or a standard term ("cf.", "aff.") to express the determiner’s doubts about the dwc:Identification.
+
+v_typestatus
+	
+
+String
+	
+
+Yes
+	
+
+24 A list (concatenated and separated) of nomenclatural types (type status, typified scientific name, publication) applied to the subject.
+
+v_identifiedby
+	
+
+String
+	
+
+Yes
+	
+
+24 A list (concatenated and separated) of names of people, groups, or organizations who assigned the dwc:Taxon to the subject.
+
+v_identifiedbyid
+	
+
+String
+	
+
+Yes
+	
+
+24 A list (concatenated and separated) of the globally unique identifier for the person, people, groups, or organizations responsible for assigning the dwc:Taxon to the subject.
+
+v_dateidentified
+	
+
+String
+	
+
+Yes
+	
+
+24 The date on which the subject was determined as representing the dwc:Taxon.
+
+v_identificationreferences
+	
+
+String
+	
+
+Yes
+	
+
+24 A list (concatenated and separated) of references (publication, global unique identifier, URI) used in the dwc:Identification.
+
+v_identificationverificationstatus
+	
+
+String
+	
+
+Yes
+	
+
+24 A categorical indicator of the extent to which the taxonomic identification has been verified to be correct.
+
+v_identificationremarks
+	
+
+String
+	
+
+Yes
+	
+
+24 Comments or notes about the dwc:Identification.
+
+v_taxonid
+	
+
+String
+	
+
+Yes
+	
+
+24 An identifier for the set of dwc:Taxon information. May be a global unique identifier or an identifier specific to the data set.
+
+v_scientificnameid
+	
+
+String
+	
+
+Yes
+	
+
+24 An identifier for the nomenclatural (not taxonomic) details of a scientific name.
+
+v_acceptednameusageid
+	
+
+String
+	
+
+Yes
+	
+
+24 An identifier for the name usage (documented meaning of the name according to a source) of the currently valid (zoological) or accepted (botanical) taxon.
+
+v_parentnameusageid
+	
+
+String
+	
+
+Yes
+	
+
+24 An identifier for the name usage (documented meaning of the name according to a source) of the direct, most proximate higher-rank parent taxon (in a classification) of the most specific element of the dwc:scientificName.
+
+v_originalnameusageid
+	
+
+String
+	
+
+Yes
+	
+
+24 An identifier for the name usage (documented meaning of the name according to a source) in which the terminal element of the dwc:scientificName was originally established under the rules of the associated dwc:nomenclaturalCode.
+
+v_nameaccordingtoid
+	
+
+String
+	
+
+Yes
+	
+
+24 An identifier for the source in which the specific taxon concept circumscription is defined or implied. See dwc:nameAccordingTo.
+
+v_namepublishedinid
+	
+
+String
+	
+
+Yes
+	
+
+24 An identifier for the publication in which the dwc:scientificName was originally established under the rules of the associated dwc:nomenclaturalCode.
+
+v_taxonconceptid
+	
+
+String
+	
+
+Yes
+	
+
+24 An identifier for the taxonomic concept to which the record refers - not for the nomenclatural details of a dwc:Taxon.
+
+v_scientificname
+	
+
+String
+	
+
+Yes
+	
+
+24 The full scientific name, with authorship and date information if known. When forming part of a dwc:Identification, this should be the name in lowest level taxonomic rank that can be determined. This term should not contain identification qualifications, which should instead be supplied in the dwc:identificationQualifier term.
+
+v_acceptednameusage
+	
+
+String
+	
+
+Yes
+	
+
+24 The full name, with authorship and date information if known, of the currently valid (zoological) or accepted (botanical) dwc:Taxon.
+
+v_parentnameusage
+	
+
+String
+	
+
+Yes
+	
+
+24 The full name, with authorship and date information if known, of the direct, most proximate higher-rank parent dwc:Taxon (in a classification) of the most specific element of the dwc:scientificName.
+
+v_originalnameusage
+	
+
+String
+	
+
+Yes
+	
+
+24 The taxon name, with authorship and date information if known, as it originally appeared when first established under the rules of the associated dwc:nomenclaturalCode. The basionym (botany) or basonym (bacteriology) of the dwc:scientificName or the senior/earlier homonym for replaced names.
+
+v_nameaccordingto
+	
+
+String
+	
+
+Yes
+	
+
+24 The reference to the source in which the specific taxon concept circumscription is defined or implied - traditionally signified by the Latin "sensu" or "sec." (from secundum, meaning "according to"). For taxa that result from identifications, a reference to the keys, monographs, experts and other sources should be given.
+
+v_namepublishedin
+	
+
+String
+	
+
+Yes
+	
+
+24 A reference for the publication in which the dwc:scientificName was originally established under the rules of the associated dwc:nomenclaturalCode.
+
+v_namepublishedinyear
+	
+
+String
+	
+
+Yes
+	
+
+24 The four-digit year in which the dwc:scientificName was published.
+
+v_higherclassification
+	
+
+String
+	
+
+Yes
+	
+
+24 A list (concatenated and separated) of taxa names terminating at the rank immediately superior to the referenced dwc:Taxon.
+
+v_kingdom
+	
+
+String
+	
+
+Yes
+	
+
+24 The full scientific name of the kingdom in which the dwc:Taxon is classified.
+
+v_phylum
+	
+
+String
+	
+
+Yes
+	
+
+24 The full scientific name of the phylum or division in which the dwc:Taxon is classified.
+
+v_class
+	
+
+String
+	
+
+Yes
+	
+
+24 The full scientific name of the class in which the dwc:Taxon is classified.
+
+v_order
+	
+
+String
+	
+
+Yes
+	
+
+24 The full scientific name of the order in which the dwc:Taxon is classified.
+
+v_superfamily
+	
+
+String
+	
+
+Yes
+	
+
+24 The full scientific name of the superfamily in which the dwc:Taxon is classified.
+
+v_family
+	
+
+String
+	
+
+Yes
+	
+
+24 The full scientific name of the family in which the dwc:Taxon is classified.
+
+v_subfamily
+	
+
+String
+	
+
+Yes
+	
+
+24 The full scientific name of the subfamily in which the dwc:Taxon is classified.
+
+v_tribe
+	
+
+String
+	
+
+Yes
+	
+
+24 The full scientific name of the tribe in which the dwc:Taxon is classified.
+
+v_subtribe
+	
+
+String
+	
+
+Yes
+	
+
+24 The full scientific name of the subtribe in which the dwc:Taxon is classified.
+
+v_genus
+	
+
+String
+	
+
+Yes
+	
+
+24 The full scientific name of the genus in which the dwc:Taxon is classified.
+
+v_genericname
+	
+
+String
+	
+
+Yes
+	
+
+24 The genus part of the dwc:scientificName without authorship.
+
+v_subgenus
+	
+
+String
+	
+
+Yes
+	
+
+24 The full scientific name of the subgenus in which the dwc:Taxon is classified.
+
+v_infragenericepithet
+	
+
+String
+	
+
+Yes
+	
+
+24 The infrageneric part of a binomial name at ranks above species but below genus.
+
+v_specificepithet
+	
+
+String
+	
+
+Yes
+	
+
+24 The name of the first or species epithet of the dwc:scientificName.
+
+v_infraspecificepithet
+	
+
+String
+	
+
+Yes
+	
+
+24 The name of the lowest or terminal infraspecific epithet of the dwc:scientificName, excluding any rank designation.
+
+v_cultivarepithet
+	
+
+String
+	
+
+Yes
+	
+
+24 Part of the name of a cultivar, cultivar group or grex that follows the dwc:scientificName.
+
+v_taxonrank
+	
+
+String
+	
+
+Yes
+	
+
+24 The taxonomic rank of the most specific name in the dwc:scientificName.
+
+v_verbatimtaxonrank
+	
+
+String
+	
+
+Yes
+	
+
+24 The taxonomic rank of the most specific name in the dwc:scientificName as it appears in the original record.
+
+v_scientificnameauthorship
+	
+
+String
+	
+
+Yes
+	
+
+24 The authorship information for the dwc:scientificName formatted according to the conventions of the applicable dwc:nomenclaturalCode.
+
+v_vernacularname
+	
+
+String
+	
+
+Yes
+	
+
+24 A common or vernacular name.
+
+v_nomenclaturalcode
+	
+
+String
+	
+
+Yes
+	
+
+24 The nomenclatural code (or codes in the case of an ambiregnal name) under which the dwc:scientificName is constructed.
+
+v_taxonomicstatus
+	
+
+String
+	
+
+Yes
+	
+
+24 The status of the use of the dwc:scientificName as a label for a taxon. Requires taxonomic opinion to define the scope of a dwc:Taxon. Rules of priority then are used to define the taxonomic status of the nomenclature contained in that scope, combined with the experts opinion. It must be linked to a specific taxonomic reference that defines the concept.
+
+v_nomenclaturalstatus
+	
+
+String
+	
+
+Yes
+	
+
+24 The status related to the original publication of the name and its conformance to the relevant rules of nomenclature. It is based essentially on an algorithm according to the business rules of the code. It requires no taxonomic opinion.
+
+v_taxonremarks
+	
+
+String
+	
+
+Yes
+	
+
+24 Comments or notes about the taxon or name.

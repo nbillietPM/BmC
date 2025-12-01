@@ -105,6 +105,80 @@ def extract_keys_dwc(inp_file, inp_path="", sep="\t", encoding="utf-8"):
     usageKeys = [key.split("/")[-1] for key in dwc_df["taxonID"]]
     return usageKeys
 
+GBIF_COLUMNS = [
+    "gbifid", "accessrights", "bibliographiccitation", "language", "license",
+    "modified", "publisher", "references", "rightsholder", "type",
+    "institutionid", "collectionid", "datasetid", "institutioncode", "collectioncode",
+    "datasetname", "ownerinstitutioncode", "basisofrecord", "informationwithheld",
+    "datageneralizations", "dynamicproperties", "occurrenceid", "catalognumber",
+    "recordnumber", "recordedby", "recordedbyid", "individualcount",
+    "organismquantity", "organismquantitytype", "sex", "lifestage",
+    "reproductivecondition", "caste", "behavior", "vitality",
+    "establishmentmeans", "degreeofestablishment", "pathway",
+    "georeferenceverificationstatus", "occurrencestatus", "preparations",
+    "disposition", "associatedoccurrences", "associatedreferences",
+    "associatedsequences", "associatedtaxa", "othercatalognumbers",
+    "occurrenceremarks", "organismid", "organismname", "organismscope",
+    "associatedorganisms", "previousidentifications", "organismremarks",
+    "materialentityid", "materialentityremarks", "verbatimlabel",
+    "materialsampleid", "eventid", "parenteventid", "eventtype",
+    "fieldnumber", "eventdate", "eventtime", "startdayofyear", "enddayofyear",
+    "year", "month", "day", "verbatimeventdate", "habitat", "samplingprotocol",
+    "samplesizevalue", "samplesizeunit", "samplingeffort", "fieldnotes",
+    "eventremarks", "locationid", "highergeographyid", "highergeography",
+    "continent", "waterbody", "islandgroup", "island", "countrycode",
+    "stateprovince", "county", "municipality", "locality", "verbatimlocality",
+    "verbatimelevation", "verticaldatum", "verbatimdepth",
+    "minimumdistanceabovesurfaceinmeters", "maximumdistanceabovesurfaceinmeters",
+    "locationaccordingto", "locationremarks", "decimallatitude",
+    "decimallongitude", "coordinateuncertaintyinmeters", "coordinateprecision",
+    "pointradiusspatialfit", "verbatimcoordinatesystem", "verbatimsrs",
+    "footprintwkt", "footprintsrs", "footprintspatialfit", "georeferencedby",
+    "georeferenceddate", "georeferenceprotocol", "georeferencesources",
+    "georeferenceremarks", "geologicalcontextid", "earliesteonorlowesteonothem",
+    "latesteonorhighesteonothem", "earliesteraorlowesterathem",
+    "latesteraorhighesterathem", "earliestperiodorlowestsystem",
+    "latestperiodorhighestsystem", "earliestepochorlowestseries",
+    "latestepochorhighestseries", "earliestageorloweststage",
+    "latestageorhigheststage", "lowestbiostratigraphiczone",
+    "highestbiostratigraphiczone", "lithostratigraphicterms", "group",
+    "formation", "member", "bed", "identificationid", "verbatimidentification",
+    "identificationqualifier", "typestatus", "identifiedby", "identifiedbyid",
+    "dateidentified", "identificationreferences", "identificationverificationstatus",
+    "identificationremarks", "taxonid", "scientificnameid", "acceptednameusageid",
+    "parentnameusageid", "originalnameusageid", "nameaccordingtoid",
+    "namepublishedinid", "taxonconceptid", "scientificname",
+    "acceptednameusage", "parentnameusage", "originalnameusage",
+    "nameaccordingto", "namepublishedin", "namepublishedinyear",
+    "higherclassification", "kingdom", "phylum", "class", "order", "superfamily",
+    "family", "subfamily", "tribe", "subtribe", "genus", "genericname",
+    "subgenus", "infragenericepithet", "specificepithet",
+    "infraspecificepithet", "cultivarepithet", "taxonrank",
+    "verbatimtaxonrank", "vernacularname", "nomenclaturalcode",
+    "taxonomicstatus", "nomenclaturalstatus", "taxonremarks", "datasetKey",
+    "publishingcountry", "lastinterpreted", "elevation", "elevationaccuracy",
+    "depth", "depthaccuracy", "distancefromcentroidinmeters", "issue",
+    "taxonomicissue", "nontaxonomicissue", "mediatype", "hascoordinate",
+    "hasgeospatialissues", "taxonKey", "acceptedtaxonKey", "kingdomKey",
+    "phylumKey", "classKey", "orderKey", "familyKey", "genusKey",
+    "subgenusKey", "speciesKey", "species", "acceptedscientificname",
+    "typifiedname", "protocol", "lastparsed", "lastcrawled", "isinvasive",
+    "repatriated", "relativeorganismquantity", "projectid", "issequenced",
+    "gbifregion", "publishedbygbifregion", "level0gid", "level0name",
+    "level1gid", "level1name", "level2gid", "level2name", "level3gid",
+    "level3name", "iucnredlistcategory", "publishingorgKey", "installationKey",
+    "institutionKey", "collectionKey", "programmeacronym",
+    "hostingorganizationKey", "isincluster", "dwcaextension", "eventdategte",
+    "eventdatelte"
+]
+GBIF_GRIDS = ["EEA", "EQDG", "DMSG", "ISEA3H", "MGRS"]
+GBIF_GRID_FUNCTIONS = ["GBIF_EEARGCode", "GBIF_EQDGCode", "GBIF_DMSGCode", "GBIF_ISEA3HCode", "GBIF_ISEA3HCode"]
+GBIF_GRID_RESOLUTIONS = [[25, 100, 250, 1000, 10000, 50000,100000],
+                    list(range(0,8)),
+                    [3600, 1800, 900, 600, 300, 150, 60, 30],
+                    list(range(1,23)),
+                    [0, 1, 10, 100, 1000, 10000, 100000]]
+
 def bbox2polygon_wkt(bbox):
     """
     Convert a bbox to a wkt style polygon to use within the GBIF SQL query API
@@ -118,17 +192,117 @@ def bbox2polygon_wkt(bbox):
     polygon = shapely.geometry.box(*bbox)
     return polygon.wkt
 
-"""
-taxon_ranks = ["species", "genus", "family", "order", "class", "phylum", "kingdom"]
+def generate_query(taxonKeys, columns, record_type, wkt_polygon,
+                   year_range=None,
+                   include_distinct_observers = True,
+                   grid=False, grid_resolution=None, coordinateUncertainty=1000,
+                   includeUnknownStatus=True,
+                   include_uncertainty=False, default_uncertainty=0,
+                   issue_flags=["hasCoordinate = TRUE", 
+                                "NOT ARRAY_CONTAINS(issue, 'ZERO_COORDINATE')",
+                                "NOT ARRAY_CONTAINS(issue, 'COORDINATE_OUT_OF_RANGE')",
+                                "NOT ARRAY_CONTAINS(issue, 'COORDINATE_INVALID')",
+                                "NOT ARRAY_CONTAINS(issue, 'COUNTRY_COORDINATE_MISMATCH')"]):
+    #check if all the selected columns are valid columns that can be selected from the occurrence table
+    if not set(columns).issubset(GBIF_COLUMNS):
+        raise ValueError(f"The following column(s) ({set(columns)-set(GBIF_COLUMNS)}) are not present in the GBIF data table") 
+    #check if the requested record type(s) is(are) valid
+    if record_type.lower() not in ["occurrence", "absence", "mixed"]:
+        raise ValueError(f"Chosen record type {record_type} is invalid. Please choose either 'occurrence', 'absence' or 'mixed'")
+    #Some columns require that we use quotes in order to use due to conflict with reserved Keywords and functions in sql
+    reserved_columns = ["group", "order", "type", "references", "class", "language", "year", "month", "day"]
+    #Format reserved columns to be quoted in "" in the SQL query string
+    quoted_columns = [f'"{col}"' if col in reserved_columns else col for col in columns]
+    time_columns = " AND ".join([f'"{col}" IS NOT NULL' for col in columns if col in ["year", "month", "day"]])
+    if year_range:
+        #Sanity check on year range, starting year must be smaller than end year
+        if year_range[0]>year_range[1]:
+            raise ValueError(f"Year range invalid (start_year > end_year). Please give a list [start_year, end_year] where (start_year < end_year)")
+        year_range_str = f'"year" >= {year_range[0]} AND "year" <= {year_range[1]} AND'
+    else:
+        year_range_str = ""
+    if issue_flags:
+        issue_str = " AND ".join(issue_flags)
+    else:
+        issue_str = ""
+    #Generate query where data is not being gridded
+    if grid != False:
+        if grid.upper() not in GBIF_GRIDS:
+            raise ValueError(f"The specified grid '{grid}' is not a supported grid. Please choose one of the following {GBIF_GRIDS}")
+        #Extract index to allow resolution verification
+        grid_idx = GBIF_GRIDS.index(grid.upper())
+        if grid_resolution not in GBIF_GRID_RESOLUTIONS[grid_idx]:
+            raise ValueError(f"The specified resolution '{grid_resolution}' is not a valid option for the selected grid. Please use one of the following option ({GBIF_GRID_RESOLUTIONS[grid_idx]})")
+        gridding_str = f"{GBIF_GRID_FUNCTIONS[grid_idx]}({grid_resolution}, decimalLatitude, decimalLongitude, COALESCE(coordinateUncertaintyInMeters, {coordinateUncertainty})) AS {grid.lower()}CellCode"
+        group_statement = f'GROUP BY {",".join(quoted_columns)}, {grid.lower()}CellCode, occurrenceStatus'
+        if record_type.lower()=="occurrence":
+            select_statement = f'SELECT {",".join(quoted_columns)}, COUNT(*) AS occurences{", COUNT(DISTINCT recordedBy) as distinctObservers" if include_distinct_observers else ""}, {gridding_str} FROM occurrence'
+            status_values = ["'PRESENT'"]
+            if includeUnknownStatus:
+                status_values.append("'UNKNOWN'")
+            status_clause = "occurrenceStatus IN ({})".format(", ".join(status_values))
+            filter_statement = f"""WHERE GBIF_Within('{wkt_polygon}', decimalLatitude, decimalLongitude) = TRUE AND {time_columns} AND {year_range_str} {issue_str} AND taxonKey IN ({','.join(map(str, taxonKeys))}) AND {status_clause}"""
+            return f"{select_statement} {filter_statement} {group_statement}"
+        elif record_type.lower()=="absence":
+            select_statement = f'SELECT {",".join(quoted_columns)}, COUNT(*) AS absences{", COUNT(DISTINCT recordedBy) as distinctObservers" if include_distinct_observers else ""}, {gridding_str} FROM occurrence'
+            status_values = ["'ABSENT'"]
+            if includeUnknownStatus:
+                status_values.append("'UNKNOWN'")
+            status_clause = "occurrenceStatus IN ({})".format(", ".join(status_values))
+            filter_statement = f"""WHERE GBIF_Within('{wkt_polygon}', decimalLatitude, decimalLongitude) = TRUE AND {time_columns} AND {year_range_str} {issue_str} AND taxonKey IN ({','.join(map(str, taxonKeys))}) AND {status_clause}"""
+            return f"{select_statement} {filter_statement} {group_statement}"
+        elif record_type.lower()=="mixed":
+            select_statement = f'SELECT {",".join(quoted_columns)}, occurrenceStatus, COUNT(*) AS frequency{", COUNT(DISTINCT recordedBy) as distinctObservers" if include_distinct_observers else ""}, {gridding_str} FROM occurrence'
+            status_values = ["'PRESENT'", "'ABSENT'"]
+            if includeUnknownStatus:
+                status_values.append("'UNKNOWN'")
+            status_clause = "occurrenceStatus IN ({})".format(", ".join(status_values))
+            filter_statement = f"""WHERE GBIF_Within('{wkt_polygon}', decimalLatitude, decimalLongitude) = TRUE AND {time_columns} AND {year_range_str} {issue_str} AND taxonKey IN ({','.join(map(str, taxonKeys))}) AND {status_clause}"""
+            return f"{select_statement} {filter_statement} {group_statement}"
+    else:
+        if include_uncertainty:
+            if default_uncertainty<0:
+                raise ValueError(f"default_uncertainty ({default_uncertainty}) is negative.")
+            if not isinstance(default_uncertainty,(int, float)):
+                raise ValueError(f"default_uncertainty needs to be a positive integer or float")
+            uncertainty_clause = f", COALESCE(coordinateUncertaintyInMeters,{default_uncertainty}) AS coordinateUncertaintyInMeters"
+        if record_type.lower()=="occurrence":
+            select_statement = f'SELECT {",".join(quoted_columns)}, decimalLongitude, decimalLatitude{uncertainty_clause} FROM occurrence'
+            status_values = ["'PRESENT'"]
+            if includeUnknownStatus:
+                status_values.append("'UNKNOWN'")
+            status_clause = "occurrenceStatus IN ({})".format(", ".join(status_values))
+            filter_statement = f"""WHERE GBIF_Within('{wkt_polygon}', decimalLatitude, decimalLongitude) = TRUE AND {time_columns} AND {year_range_str} {issue_str} AND taxonKey IN ({','.join(map(str, taxonKeys))}) AND {status_clause}"""
+            return f"{select_statement} {filter_statement}"
+        elif record_type.lower()=="absence":
+            select_statement = f'SELECT {",".join(quoted_columns)}, decimalLongitude, decimalLatitude{uncertainty_clause} FROM occurrence'
+            status_values = ["'ABSENT'"]
+            if includeUnknownStatus:
+                status_values.append("'UNKNOWN'")
+            status_clause = "occurrenceStatus IN ({})".format(", ".join(status_values))
+            filter_statement = f"""WHERE GBIF_Within('{wkt_polygon}', decimalLatitude, decimalLongitude) = TRUE AND {time_columns} AND {year_range_str} {issue_str} AND taxonKey IN ({','.join(map(str, taxonKeys))}) AND {status_clause}"""
+            return f"{select_statement} {filter_statement}"
+        elif record_type.lower()=="mixed":
+            select_statement = f'SELECT {",".join(quoted_columns)}, occurrenceStatus, decimalLongitude, decimalLatitude{uncertainty_clause} FROM occurrence'
+            status_values = ["'PRESENT'", "'ABSENT'"]
+            if includeUnknownStatus:
+                status_values.append("'UNKNOWN'")
+            status_clause = "occurrenceStatus IN ({})".format(", ".join(status_values))
+            filter_statement = f"""WHERE GBIF_Within('{wkt_polygon}', decimalLatitude, decimalLongitude) = TRUE AND {time_columns} AND {year_range_str} {issue_str} AND taxonKey IN ({','.join(map(str, taxonKeys))}) AND {status_clause}"""
+            return f"{select_statement} {filter_statement}" 
 
-class gbif_sql_query():
-    def __init__(self):
-        self.taxon_ranks = ["species", "genus", "family", "order", "class", "phylum", "kingdom"]
 
-    def col_selection(self, col_names):
 
-def generate_sql_query
-"""
+def download_query(gbif_query, target_dir="", max_time, user="", pwd=""):
+    if (user=="") and (pwd==""):
+        try:
+
+    download_key = pygbif.occurences.
+
+
+    metadata = pygbif.occurrences.download_meta(downloadKey)
+
+
 
 def generate_json_query(usageKeys, bbox, begin_year, end_year, out_file="gbif_query.json", out_path="", sendNotification='true', notificationAddress=None):
     """
