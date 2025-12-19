@@ -4,7 +4,12 @@ import pandas as pd
 import sparse
 import numpy as np
 
-def gbif_sparse_array(dataframe, idx_cols, var_col, add_time=True):
+def gbif_sparse_array(dataframe, 
+                      idx_cols, 
+                      var_col, 
+                      add_time=True,
+                      include_distinct_observers = True,
+                      grid=False):
     """
     A function that takes a pandas data frame and extracts the data so that it can be converted into a data array object.
     The sparse representation prevents memory bloating when converting to an actual cube
@@ -19,9 +24,11 @@ def gbif_sparse_array(dataframe, idx_cols, var_col, add_time=True):
         data array: A data array with the data in sparse coordinates representation
     """
     
+    #Add datetime column to the dataframe of the format YYYY-MM-01
     if add_time:
        dataframe["time"]= pd.to_datetime(dataframe[["year", "month"]].assign(day=1)) 
        idx_cols.append("time")  
+    
     #Remove any rows that do not have entries in the indexation columns
     dataframe = dataframe.dropna(subset=idx_cols)
 

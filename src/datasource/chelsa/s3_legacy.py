@@ -11,9 +11,9 @@ def validate_url_exists(url: str) -> bool:
         return False
 
 def format_url_month_ts(var, month, year, 
-                        base_url="https://os.unil.cloud.switch.ch/chelsa02/chelsa/global/monthly", 
+                        base_url="https://os.zhdk.cloud.switch.ch/chelsav2/GLOBAL/monthly", 
                         version="V.2.1",
-                        year_range=list(range(1979,2021))):
+                        year_range=list(range(1979,2020))):
     """
     Generates the link to the S3 bucket where the CHELSA monthly time series is stores
 
@@ -38,29 +38,42 @@ def format_url_month_ts(var, month, year,
     diff_ts = ["cmi","pet","sfcWind", "tas", "tasmax", "tasmin", "vpd"]
     if var in diff_ts and month==1 and year==1979:
         raise ValueError(f"Variables [{diff_ts}] start at month 2 of year 1979. No data available for month 1")    
-    return f"{base_url}/{var}/{year}/CHELSA_{var}_{month:02d}_{year}_{version}.tif"
-
-def format_chelsa_drought_url(var_name, year, 
-                              month=None, version="V.2.1", base_url="https://os.unil.cloud.switch.ch/chelsa02/chelsa/global/annual"):
-    allowed_var_names = ["mymd", "mymd10", "qkndvi", "spei12", "spi12"] 
-    #Variable name check
-    if var_name not in allowed_var_names:
-        raise ValueError(f"{var_name} invalid. Please select one of the following variables {allowed_var_names}")
-    #Temporal validity check
-    if (year not in list(range(1980, 2019))) and (var_name not in ["mymd", "mymd10", "spei12", "spi12"]):
-        raise ValueError(f"For variables ['mymd', 'mymd10', 'spei12', 'spi12'] the year must be between [1980,2018]. Current value for year parameter: {year}")
-    if (year<1982) and (var_name=="qkndvi"):
-        raise ValueError(f"Index 'qkndvi' starts at year 1982. Selected year is {year}")
-    if (month not in list(range(1, 13))) and (var_name in ["spei12", "spi12"]):
-        raise ValueError(f"{var_name} requires a month. Given value for optional parameter 'month': {month}")
-    if var_name in ["mymd", "mymd10", "qkndvi"]:
-        return f"{base_url}/{var_name}/{year}/CHELSA_{var_name}_{year}_{version}.tif"
+    if var == "rsds":
+        #Naming inconsistency where year and month have switched place
+        return f"{base_url}/{var}/CHELSA_{var}_{year}_{month:02d}_{version}.tif"
+    elif var == "pet":
+        #Naming inconsistency where '_penman' is added after variable name
+        return f"{base_url}/{var}/CHELSA_{var}_penman_{month:02d}_{year}_{version}.tif"
     else:
-        return f"{base_url}/{var_name}/{year}/CHELSA_{var_name}_{month}_{year}_{version}.tif"
+        #Returns the formatted string, months are automatically converted to the correct string format where single digits have zero padding
+        return f"{base_url}/{var}/CHELSA_{var}_{month:02d}_{year}_{version}.tif"
     
+def format_url_clim_ref_period(var,
+                               ref_period = "1981-2010",
+                               base_url="https://os.zhdk.cloud.switch.ch/chelsav2/GLOBAL/climatologies/1981-2010",
+                               version="V.2.1"):
+    """
+    Generate URL's that link to the reference data tif files for the BIOCLIM+ variables for the reference period 1980-2010
+    """
+    var_opt = ['ai','bio10','bio11','bio12','bio13','bio14','bio15','bio16','bio17','bio18','bio19','bio1','bio2','bio3',
+               'bio4','bio5','bio6','bio7','bio8','bio9','clt_max','clt_mean','clt_min','clt_range','cmi_max','cmi_mean',
+               'cmi_min','cmi_range','fcf','fgd','gdd0','gdd10','gdd5','gddlgd0','gddlgd10','gddlgd5','gdgfgd0','gdgfgd10',
+               'gdgfgd5','gsl','gsp','gst','hurs_max','hurs_mean','hurs_min','hurs_range','kg0','kg1','kg2','kg3','kg4','kg5',
+               'lgd','ngd0','ngd10','ngd5','npp','pet_penman_max','pet_penman_mean','pet_penman_min','pet_penman_range',
+               'rsds_max','rsds_min','rsds_mean','rsds_range','scd','sfcWind_max','sfcWind_mean','sfcWind_min','sfcWind_range',
+               'swb','swe','vpd_max','vpd_mean','vpd_min','vpd_range']
+    if var not in var_opt:
+        raise ValueError(f"Invalid variable name: {var}. Variable must be one of the following options {var_opt}")
+    #Deviation in naming scheme
+    if "rsds" in var:
+        var_split = var.split("_")
+        return f"{base_url}/bio/CHELSA_rsds_{ref_period}_{var_split[1]}_{version}.tif"
+    else:  
+        return f"{base_url}/bio/CHELSA_{var}_{ref_period}_{version}.tif"
+
 def format_url_clim_ref_monthly(var, month,
                                 ref_period = "1981-2010",
-                                base_url="https://os.unil.cloud.switch.ch/chelsa02/chelsa/global/climatologies",
+                                base_url="https://os.zhdk.cloud.switch.ch/chelsav2/GLOBAL/climatologies/1981-2010",
                                 version="V.2.1"):
     """
     Generate URL's that link to the reference data tif files on a monthly basis for the reference period 1980-2010 
@@ -70,39 +83,26 @@ def format_url_clim_ref_monthly(var, month,
         raise ValueError(f"Invalid variable name: {var}. Variable must be one of the following options {var_opt}")
     if month not in range(1,13):
         raise ValueError(f"Month invalid: {month}. Please use a number between 1 and 12")
+    if var == "rsds":
+        #Naming inconsistency where year and month have switched place
+        return f"{base_url}/{var}/CHELSA_{var}_{ref_period}_{month:02d}_{version}.tif"
+    if var == "pet":
+        #Naming inconsistency where '_penman' is added after variable name
+        return f"{base_url}/{var}/CHELSA_{var}_penman_{month:02d}_{ref_period}_{version}.tif"
     else:
-        return f"{base_url}/{var}/{ref_period}/CHELSA_{var}_{month}_{ref_period}_{version}.tif"
+        return f"{base_url}/{var}/CHELSA_{var}_{month:02d}_{ref_period}_{version}.tif"
     
-def format_url_clim_ref_period(var,
-                               ref_period = "1981-2010",
-                               base_url="https://os.unil.cloud.switch.ch/chelsa02/chelsa/global/bioclim",
-                               version="V.2.1"):
-    """
-    Generate URL's that link to the reference data tif files for the BIOCLIM+ variables for the reference period 1980-2010
-    """
-    var_opt = ["bio01", "bio02", "bio03", "bio04", "bio05", "bio06", "bio07", "bio08", "bio09", "bio10", 
-               "bio11", "bio12", "bio13", "bio14", "bio15", "bio16", "bio17", "bio18", "bio19", "cltmax", 
-               "cltmean", "cltmin", "cltrange", "cmimax", "cmimean", "cmimin", "cmirange", "fcf", "fgd", 
-               "gdd0", "gdd10", "gdd5", "gddlgd0", "gddlgd10", "gddlgd5", "gdgfgd10", "gdgfgd5", "gsl", 
-               "gsp", "gst", "hursmax", "hursmean", "hursmin", "hursrange", "kg0", "kg1", "kg2", "kg3", 
-               "kg4", "kg5", "lgd", "ngd0", "ngd10", "ngd5", "npp", "petmax", "petmean", "petmin", "petrange",
-               "rsdsmax", "rsdsmean", "rsdsmin", "rsdsrange", "scd", "sfcWindmax", "sfcWindmean", "sfcWindmin", 
-               "sfcWindrange", "swb", "swe", "vpdmax", "vpdmean", "vpdmin", "vpdrange"]
-    if var not in var_opt:
-        raise ValueError(f"Invalid variable name: {var}. Variable must be one of the following options {var_opt}")
-    else:  
-        return f"{base_url}/{var}/CHELSA_{var}_{ref_period}_{version}.tif"
-    
+
 def format_url_clim_sim_period(var, year_range, model_name, scenario, 
-                               base_url="https://os.unil.cloud.switch.ch/chelsa02/chelsa/global/bioclim",
+                               base_url="https://os.zhdk.cloud.switch.ch/chelsav2/GLOBAL/climatologies",
                                version="V.2.1"):
     """
     generate url that link to the files in the S3 bucket that contain the future climate projections
     """
-    var_opt = ["bio01", "bio02", "bio03", "bio04", "bio05", "bio06", "bio07", "bio08", "bio09", "bio10", 
-               "bio11", "bio12", "bio13", "bio14", "bio15", "bio16", "bio17", "bio18", "bio19", "fcf", "fgd", 
-               "gdd0", "gdd10", "gdd5", "gddlgd0", "gddlgd10", "gddlgd5", "gdgfgd10", "gdgfgd5", "gsl", "gsp", 
-               "gst", "kg0", "kg1", "kg2", "kg3", "kg4", "kg5", "lgd", "ngd0", "ngd10", "ngd5", "npp","scd"]
+    var_opt=['bio10','bio11','bio12','bio13','bio14','bio15','bio16','bio17','bio18','bio19','bio1','bio2','bio3',
+             'bio4','bio5','bio6','bio7','bio8','bio9','fcf','fgd','gdd0','gdd10','gdd5','gddlgd0','gddlgd10',
+             'gddlgd5','gdgfgd0','gdgfgd10','gdgfgd5','gsl','gsp','gst','kg0','kg1','kg2','kg3','kg4','kg5',
+             'lgd','ngd0','ngd10','ngd5','npp','scd','swe']
     if var not in var_opt:
         raise ValueError(f"Variable invalid:{var} Variable must be one the following options {var_opt}")
     model_names = ['GFDL-ESM4','IPSL-CM6A-LR','MPI-ESM1-2-HR','MRI-ESM2-0','UKESM1-0-LL','gfdl-esm4','ipsl-cm6a-lr','mpi-esm1-2-hr','mri-esm2-0','ukesm1-0-ll']
@@ -114,10 +114,10 @@ def format_url_clim_sim_period(var, year_range, model_name, scenario,
     year_ranges = ["2011-2040","2041-2070","2071-2100"]
     if year_range not in year_ranges:
         raise ValueError(f"Year range invalid: {year_range} Please use on of the following year ranges {year_ranges}")
-    return f"{base_url}/{var}/{year_range}/{model_name.upper()}/{scenario.lower()}/CHELSA_{model_name.lower()}_{scenario.lower()}_{var}_{year_range}_{version}.tif"
+    return f"{base_url}/{year_range}/{model_name.upper()}/{scenario.lower()}/bio/CHELSA_{var.lower()}_{year_range}_{model_name.lower()}_{scenario.lower()}_{version}.tif"
 
 def format_url_clim_sim_month(var, year_range, month, model_name, scenario, 
-                              base_url="https://os.unil.cloud.switch.ch/chelsa02/chelsa/global/climatologies",
+                              base_url="https://os.zhdk.cloud.switch.ch/chelsav2/GLOBAL/climatologies",
                               version="V.2.1"):
     """
     generate url that link to the files in the S3 bucket that contain the future climate projections for a specific month
@@ -136,4 +136,6 @@ def format_url_clim_sim_month(var, year_range, month, model_name, scenario,
     year_ranges = ["2011-2040","2041-2070","2071-2100"]
     if year_range not in year_ranges:
         raise ValueError(f"Year range invalid: {year_range} Please use on of the following year ranges {year_ranges}")
-    return (f"{base_url}/{var}/{year_range}/{model_name.upper()}/{scenario.lower()}/CHELSA_{model_name.lower()}_r1i1p1f1_w5e5_{scenario.lower()}_{var.lower()}_{month:02d}_{year_range}_{version}.tif")
+    #Added a replace '-' with "_" to take the deviating naming structure of CHELSA into account
+    year_range_clean = year_range.replace("-", "_")
+    return (f"{base_url}/{year_range}/{model_name.upper()}/{scenario.lower()}/{var.lower()}/CHELSA_{model_name.lower()}_r1i1p1f1_w5e5_{scenario.lower()}_{var.lower()}_{month:02d}_{year_range_clean}_norm.tif")

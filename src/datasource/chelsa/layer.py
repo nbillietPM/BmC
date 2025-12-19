@@ -5,7 +5,7 @@ import itertools
 from tqdm import tqdm
 
 from .sampling import *
-from .s3 import *
+from .s3_legacy import *
 
 def generate_month_year_range(start_month, end_month, start_year, end_year):
     """
