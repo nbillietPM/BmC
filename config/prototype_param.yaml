@@ -5,42 +5,14 @@ spatial:
   # select the method which should be employed
   method: "bbox"
   bbox:
-    long_min: 4.171371
-    long_max: 4.743004
-    lat_min: 50.684060
-    lat_max: 50.877911
+    long_min: 3.510132
+    long_max: 4.795532
+    lat_min: 50.675576
+    lat_max: 51.455718
   polygon:
     shapefile_path: "/shapefile/filename.shp"
 
 layers:
-  gbif:
-    enabled: true
-    type:
-      occurences: true
-      absences: false
-    species_paths: "/directory/species_list.csv"
-    taxonomic:
-      highest_rank: "kingdom" #What is the highest taxonomic rank required
-      lowest_rank: "species" #What is the lowest taxonomic rank required
-    time:
-      start_year: #Number
-      end_year: #Number
-      start_month: #Number between 1 and 12
-      end_month: #Number between 1 and 12
-    defaultCoordinateUncertainty: 1000
-    cubing:
-      enabled: true
-      cubingGrid: "EEA"
-    selection_issues: #Selection flags that need to be taken into account when selecting records
-      spatial:
-        hasCoordinate: true 
-        zeroCoordinate: true
-        invalidCoordinate: true 
-        countryMismatch: true
-    file:
-      file_path: "data/"
-      file_name: "species_oi.csv"
-      sep: "\t"
   chelsa:
     enabled: true
     chelsa_month:

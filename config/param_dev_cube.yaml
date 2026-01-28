@@ -5,10 +5,10 @@ spatial:
   # select the method which should be employed
   method: "bbox"
   bbox:
-    long_min: 4.171371
-    long_max: 4.743004
-    lat_min: 50.684060
-    lat_max: 50.877911
+    long_min: 3.510132
+    long_max: 4.795532
+    lat_min: 50.675576
+    lat_max: 51.455718
   polygon:
     shapefile_path: "/shapefile/filename.shp"
 

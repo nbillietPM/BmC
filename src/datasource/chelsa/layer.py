@@ -73,7 +73,7 @@ def check_spatial_homo(data):
 
 
 def chelsa_month_ts(var, bbox, start_month, end_month, start_year, end_year,
-                    base_url='https://os.zhdk.cloud.switch.ch/chelsav2/GLOBAL/monthly',
+                    base_url="https://os.unil.cloud.switch.ch/chelsa02/chelsa/global/monthly",
                     version='V.2.1'):
     """
     Generates a xarray dataArray object that collects monthly information within the specified time frame determined 
@@ -99,7 +99,7 @@ def chelsa_month_ts(var, bbox, start_month, end_month, start_year, end_year,
 
 def chelsa_clim_ref_period(var, bbox, 
                            ref_period="1981-2010",
-                           base_url='https://os.zhdk.cloud.switch.ch/chelsav2/GLOBAL/climatologies/1981-2010',
+                           base_url="https://os.unil.cloud.switch.ch/chelsa02/chelsa/global/bioclim",
                            version='V.2.1'):
     """
     Generates a xarray dataArray object that collects the information for the reference climatological data the 
@@ -123,7 +123,7 @@ def chelsa_clim_ref_period(var, bbox,
 
 def chelsa_clim_ref_month(var, bbox, months,
                           ref_period="1981-2010",
-                          base_url='https://os.zhdk.cloud.switch.ch/chelsav2/GLOBAL/climatologies/1981-2010',
+                          base_url="https://os.unil.cloud.switch.ch/chelsa02/chelsa/global/climatologies",
                           version='V.2.1'):
     """
     Generate a xarray dataArray for reference climatological data on a monthly basis for the specified variable of interest.
@@ -144,7 +144,7 @@ def chelsa_clim_ref_month(var, bbox, months,
         return var,dataArray
 
 def chelsa_clim_sim_period(var, bbox, year_ranges, model_names, ensemble_members,
-                           base_url='https://os.zhdk.cloud.switch.ch/chelsav2/GLOBAL/climatologies',
+                           base_url="https://os.unil.cloud.switch.ch/chelsa02/chelsa/global/bioclim",
                            version='V.2.1'):
     """
     
@@ -169,7 +169,7 @@ def chelsa_clim_sim_period(var, bbox, year_ranges, model_names, ensemble_members
         return var,dataArray
 
 def chelsa_clim_sim_month(var, bbox, year_ranges, months, model_names, ensemble_members,
-                          base_url='https://os.zhdk.cloud.switch.ch/chelsav2/GLOBAL/climatologies',
+                          base_url="https://os.unil.cloud.switch.ch/chelsa02/chelsa/global/climatologies",
                           version='V.2.1'):
     params = list(itertools.product(year_ranges, months, model_names, ensemble_members))
     urls = [format_url_clim_sim_month(var, *param, base_url=base_url, version=version) for param in params]
