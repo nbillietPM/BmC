@@ -1,7 +1,7 @@
 from .chelsa import *
 from .gbif import *
-from datatree import DataTree
-from datatree import open_datatree
+from xarray import DataTree
+from xarray import open_datatree
 import xarray as xr
 import numpy as np
 import sparse
@@ -40,18 +40,27 @@ class bmd_cube(chelsa_cube, gbif_cube):
         return None
     
     def construct_datatree(self) -> str:
-        #Assemble a fresh DataTree
+        # Assemble a fresh DataTree
         self.data_tree = DataTree(name=self.cube_name)
+        
         if self.groups.get("static"):
-            static_nodes = [DataTree(name=nm, data=ds) for nm, ds in 
+            # Change 'data' to 'dataset'
+            static_nodes = [DataTree(dataset=ds, name=nm) for nm, ds in 
                             zip(self.group_names["static"], self.groups["static"])]
-            self.data_tree["static"] = DataTree(name="static",
-                                                children={node.name: node for node in static_nodes})
+            
+            # In the new API, you can also assign children directly like a dictionary
+            self.data_tree["static"] = DataTree(name="static")
+            for node in static_nodes:
+                self.data_tree["static"][node.name] = node
+
         if self.groups.get("dynamic"):
-            dynamic_nodes = [DataTree(name=nm, data=ds) for nm, ds in 
-                             zip(self.group_names["dynamic"], self.groups["dynamic"])]
-            self.data_tree["dynamic"] = DataTree(name="dynamic",
-                                                 children={node.name: node for node in dynamic_nodes})
+            # Change 'data' to 'dataset'
+            dynamic_nodes = [DataTree(dataset=ds, name=nm) for nm, ds in 
+                            zip(self.group_names["dynamic"], self.groups["dynamic"])]
+            
+            self.data_tree["dynamic"] = DataTree(name="dynamic")
+            for node in dynamic_nodes:
+                self.data_tree["dynamic"][node.name] = node
 
     def sparse_to_pseudodense(self,dataset, var_name):
         """
