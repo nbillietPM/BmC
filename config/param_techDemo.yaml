@@ -13,6 +13,34 @@ spatial:
     shapefile_path: "/shapefile/filename.shp"
 
 layers:
+  gbif:
+    enabled: false
+    type:
+      occurences: true
+      absences: false
+    species_paths: "/directory/species_list.csv"
+    taxonomic:
+      highest_rank: "kingdom" #What is the highest taxonomic rank required
+      lowest_rank: "species" #What is the lowest taxonomic rank required
+    time:
+      start_year: #Number
+      end_year: #Number
+      start_month: #Number between 1 and 12
+      end_month: #Number between 1 and 12
+    defaultCoordinateUncertainty: 1000
+    cubing:
+      enabled: true
+      cubingGrid: "EEA"
+    selection_issues: #Selection flags that need to be taken into account when selecting records
+      spatial:
+        hasCoordinate: true 
+        zeroCoordinate: true
+        invalidCoordinate: true 
+        countryMismatch: true
+    file:
+      file_path: "out/"
+      file_name: "species_oi.csv"
+      sep: "\t"
   chelsa:
     enabled: true
     chelsa_month:
@@ -69,12 +97,12 @@ layers:
         included: []
         excluded: []
       model:
-        include_all: true
-        included: []
+        include_all: false
+        included: ["gfdl-esm4", "ipsl-cm6a-lr"]
         excluded: []
       scenario:
-        include_all: true
-        included: []
+        include_all: false
+        included: ["ssp126", "ssp370"]
         excluded: []
       source:
         base_url: "https://os.zhdk.cloud.switch.ch/chelsav2/GLOBAL/climatologies"
@@ -84,24 +112,24 @@ layers:
       enabled: true
       time:
         year_ranges:
-          include_all: true
-          included: []
+          include_all: false
+          included: ["2011-2040", "2041-2070"]
           excluded: []
         months:
           include_all: true
-          included: [1]
+          included: []
           excluded: []
       variables:
-        include_all: true
-        included: []
+        include_all: false
+        included: ["tas", "tasmin"]
         excluded: []
       model:
-        include_all: true
-        included: []
+        include_all: false
+        included: ["gfdl-esm4", "ipsl-cm6a-lr"]
         excluded: []
       scenario:
-        include_all: true
-        included: []
+        include_all: false
+        included: ["ssp126", "ssp370"]
         excluded: []
       source:
         base_url: "https://os.zhdk.cloud.switch.ch/chelsav2/GLOBAL/climatologies"
