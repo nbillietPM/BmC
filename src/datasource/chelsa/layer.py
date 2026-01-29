@@ -35,28 +35,22 @@ def generate_month_year_range(start_month, end_month, start_year, end_year):
             year += 1
     return datetimes
 
-def batch_process_urls(urls, bbox, params, desc="Processing", unit="item"):
+def batch_process_urls(urls, bbox, params):
     """
-    Iterates over urls and params_list in lockstep, calling func(url, *params).
-    Displays an in-line tqdm progress bar.
+    Iterates over urls and params in lockstep, calling read_bounding_box(url, bbox).
     
     Returns:
-      - results: list of successful func outputs
-      - error_params: the params tuple that caused an exception, or None if all succeeded
+        - results: list of successful outputs
+        - error_param: the param that caused an exception (if any)
     """
     data = []
-    total = len(urls)
-    pbar = tqdm(total=total, desc=desc, unit=unit)
     for url, param in zip(urls, params):
         try:
-            output = read_bounding_box(url,bbox)
+            output = read_bounding_box(url, bbox)
             data.append(output)
-            pbar.update(1)
         except Exception as e:
-            pbar.close()
             print(f"\nError with params {param!r}: {e}")
             return data, param
-    pbar.close()
     return data
 
 def check_spatial_homo(data):

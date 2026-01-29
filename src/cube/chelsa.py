@@ -15,7 +15,7 @@ class chelsa_cube(spatiotemporal_cube):
     #generate monthly data for a set of variables
     def generate_chelsa_month_layer(self, param_file, param_path):
         chelsa_month_param = extract_param.read_chelsa_month_param(param_file, param_path = param_path)
-        var_names, data = zip(*self.da_layer_constructor(layer.chelsa_month_ts, chelsa_month_param)) #returns list of tuples (var_name, data)
+        var_names, data = zip(*self.da_layer_constructor_concurrent(layer.chelsa_month_ts, chelsa_month_param)) #returns list of tuples (var_name, data)
         #Current assumption is that all variables will be requested
         #In future general harmonization functions will be implemented 
         #Select the coordinates from the second variable, clt is the only one that differs
@@ -28,7 +28,7 @@ class chelsa_cube(spatiotemporal_cube):
 
     def generate_chelsa_ref_period_layer(self, param_file, param_path):
         chelsa_ref_period_param = extract_param.read_chelsa_clim_ref_period_param(param_file, param_path = param_path)
-        var_names, data = zip(*self.da_layer_constructor(layer.chelsa_clim_ref_period, chelsa_ref_period_param))
+        var_names, data = zip(*self.da_layer_constructor_concurrent(layer.chelsa_clim_ref_period, chelsa_ref_period_param))
         upscale_idx = [var_names.index(el) for el in ['clt_max', 'clt_mean', 'clt_min', 'clt_range'] if el in var_names]
         data = list(data)
         if upscale_idx:
@@ -45,7 +45,7 @@ class chelsa_cube(spatiotemporal_cube):
 
     def generate_chelsa_ref_month_layer(self, param_file, param_path):
         chelsa_ref_month_param = extract_param.read_chelsa_clim_ref_month_param(param_file, param_path = param_path)
-        var_names, data = zip(*self.da_layer_constructor(layer.chelsa_clim_ref_month, chelsa_ref_month_param))
+        var_names, data = zip(*self.da_layer_constructor_concurrent(layer.chelsa_clim_ref_month, chelsa_ref_month_param))
         #Current assumption is that all variables will be requested
         #In future general harmonization functions will be implemented 
         #Select the coordinates from the second variable, clt is the only one that differs
@@ -58,13 +58,13 @@ class chelsa_cube(spatiotemporal_cube):
 
     def generate_chelsa_sim_period_layer(self, param_file, param_path):
         chelsa_sim_period_param = extract_param.read_chelsa_clim_sim_period_param(param_file, param_path = param_path)
-        var_names, data = zip(*self.da_layer_constructor(layer.chelsa_clim_sim_period, chelsa_sim_period_param))
+        var_names, data = zip(*self.da_layer_constructor_concurrent(layer.chelsa_clim_sim_period, chelsa_sim_period_param))
         ds = xr.Dataset(dict(zip(var_names, data)))
         return ds
 
     def generate_chelsa_sim_month_layer(self, param_file, param_path):
         chelsa_sim_month_param = extract_param.read_chelsa_clim_sim_month_param(param_file, param_path = param_path)
-        var_names, data = zip(*self.da_layer_constructor(layer.chelsa_clim_sim_month, chelsa_sim_month_param))
+        var_names, data = zip(*self.da_layer_constructor_concurrent(layer.chelsa_clim_sim_month, chelsa_sim_month_param))
         ds = xr.Dataset(dict(zip(var_names, data)))
         return ds
 

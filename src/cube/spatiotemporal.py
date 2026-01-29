@@ -1,4 +1,6 @@
 import xarray as xr
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 
 class spatiotemporal_cube():
     def __init__(self):
@@ -16,6 +18,36 @@ class spatiotemporal_cube():
         for var in param["var"]:
             data_arrays.append(data_layer_func(var, *static_param))
         return data_arrays
+    
+    def da_layer_constructor_concurrent(self, layer_func, param, max_workers=4):
+        """
+        Concurrent layer constructor.
+        
+        CRITICAL: This relies on 'param' dictionary keys being in the EXACT order 
+        expected by 'layer_func'.
+        """
+        
+        # 1. Extract Static Parameters
+        # Slice [1:] to skip 'var' and keep the rest (bbox, year_ranges, etc.)
+        # strict order is preserved here.
+        static_param = list(param.values())[1:]
+        
+        # 2. Build Task Arguments
+        # Create a list of tuples: [(var1, bbox, list_of_years...), (var2, bbox, list_of_years...)]
+        # The 'var' is inserted as the FIRST argument.
+        task_arguments = [ (var, *static_param) for var in param["var"] ]
+
+        # 3. Define Worker
+        def _worker(args):
+            # Unpack the tuple into positional arguments
+            return layer_func(*args)
+
+        # 4. Execute
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # map guarantees results are returned in the same order as 'param["var"]'
+            results = list(executor.map(_worker, task_arguments))
+            
+        return results
 
     def da_concat(self, data_arrays, dim_name, coordinates):
         """
