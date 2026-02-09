@@ -274,7 +274,7 @@ def generate_query(taxonKeys, columns, record_type, wkt_polygon,
     #Return aggregated records based on the selected columns, grid cell code and occurrencestatus
     if aggregate:
         #Group based on the columns that where requested, grid cell code and occurrence status
-        group_statement = f'GROUP BY {",".join(quoted_columns)}{","+grid.lower()+"CellCode" if grid else ""}, occurrenceStatus'
+        group_statement = f'GROUP BY {",".join(quoted_columns)}{","+grid.lower()+"CellCode" if grid else ""}'
         aggr_statement = f'COUNT(*) AS {status_str_map[record_type]}'
     distinct_obs_clause = ""
     if include_distinct_observers and aggregate:
