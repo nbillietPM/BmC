@@ -18,6 +18,19 @@ class bmd_cube(chelsa_cube, gbif_cube):
         self.cube_dir = None
         self.cube_name = None
 
+    def _initialize_wekeo_client(self):
+        """Authenticates the WEkEO client using the .env file."""
+        
+        print("Authenticating with WEkEO...")
+        wekeo_user = os.getenv("HDA_USER")
+        wekeo_pass = os.getenv("HDA_PASSWORD")
+        
+        if not wekeo_user or not wekeo_pass:
+            raise ValueError("Authentication failed: HDA_USER or HDA_PASSWORD missing from .env file!")
+            
+        self.wekeo_client = Client(user=wekeo_user, password=wekeo_pass)
+
+
     def generate_bmd_data(self, param_file, param_path):
         param_filepath = param_file if os.path.isabs(param_file) else os.path.join(param_path, param_file)
         with open(param_filepath) as f:
