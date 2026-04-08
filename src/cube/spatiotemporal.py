@@ -33,50 +33,75 @@ class spatiotemporal_cube():
     # ---------------------------------------------------------
     # ~100m at the equator (3 arc-seconds)
     "Global_WGS84_3sec": {"crs": "EPSG:4326", "resolution": 0.0008333333333333333, "bounds": (-180.0, -90.0, 180.0, 90.0)},
-    
     # ~250m at the equator (7.5 arc-seconds)
     "Global_WGS84_7_5sec": {"crs": "EPSG:4326", "resolution": 0.0020833333333333333, "bounds": (-180.0, -90.0, 180.0, 90.0)},
-    
     # ~500m at the equator (15 arc-seconds)
     "Global_WGS84_15sec": {"crs": "EPSG:4326", "resolution": 0.004166666666666667, "bounds": (-180.0, -90.0, 180.0, 90.0)},
-    
     # ~1km at the equator (30 arc-seconds)
     "Global_WGS84_30sec": {"crs": "EPSG:4326", "resolution": 0.008333333333333333, "bounds": (-180.0, -90.0, 180.0, 90.0)},
-    
     # ~10km at the equator (5 arc-minutes)
     "Global_WGS84_5min": {"crs": "EPSG:4326", "resolution": 0.08333333333333333, "bounds": (-180.0, -90.0, 180.0, 90.0)}
 }
         
-    def _setup_pipeline_logger(self, logger_name, log_file_path):
+    def _setup_pipeline_logger(self, logger_name, log_filepath):
         """
-        Creates and configures a reusable logger that writes to a file 
-        and automatically catches all unhandled global exceptions.
+        Creates an instance of the standard python logging tool which can be called inside the spatiotemporal cube class
+        and its children to automatically stream execution progress and potential errors/bugs to a log file during cube generation
+
+        Parameters
+        ----------
+
+        logger_name : str
+            logger_name description
+        log_filepath : str
+            The location where the .log file is written to. Must contain the directory path and the filename ending in .log
+
+        Returns
+        -------
+
+        logger : logging.Logger
+            Object that automates the handling off messages and errors
+
+        Notes
+        -----
+
+        The function is made private and will be called at the initialization of any instance of the spatiotemporal class and its associated 
+        children. The end user should ideally not be interfacing with the logger directly
+
+        See Also
+        --------
+
+        src.utils.logger.log_execution
+        
         """
-        #Initialize logger 
+        # Initialize the logger
         logger = logging.getLogger(logger_name)
+        # Lowest level of messages that are being processed are those of the INFO category
         logger.setLevel(logging.INFO)
         
+        # Handlers determine where the messages are being streamed to
         # Prevent adding duplicate handlers if this is called multiple times
         if not logger.handlers:
-            # --- FILE HANDLER ---
-            #Determine where the logger should write information to
-            file_handler = logging.FileHandler(log_file_path)
+            # Setup that messages are written to a .log file
+            file_handler = logging.FileHandler(log_filepath)
+            # Control the level of the messages at the file_handler level
             file_handler.setLevel(logging.INFO)
-            
-            # Format message to contain a timestamp, which level of the logger we are using and the associated message with it
+            # Standard line writing format
+            # asctime : ASCII time with datefmt year-month-day hour:minutes:seconds
             formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+            # Add format to the file_handler
             file_handler.setFormatter(formatter)
-            
+            # Add file handler to the logger
             logger.addHandler(file_handler)
             
-        # --- GLOBAL EXCEPTION HANDLER ---
-        # Allows us to stream failures of the software to the log file
+        # GLOBAL EXCEPTION HANDLER
+        # Setup logger so that hard coded messages are being supplemented by global exceptions
+        # This represents a safety net in case the code crashes or an unexpected bug is encountered
         def handle_exception(exc_type, exc_value, exc_traceback):
             # Ignore KeyboardInterrupt so you can still stop the script with Ctrl+C
             if issubclass(exc_type, KeyboardInterrupt):
                 sys.__excepthook__(exc_type, exc_value, exc_traceback)
                 return
-
             # Log the error and the full traceback as a CRITICAL issue
             logger.critical("Uncaught exception in pipeline:", exc_info=(exc_type, exc_value, exc_traceback))
 

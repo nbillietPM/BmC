@@ -1,11 +1,25 @@
 import logging
 
-def log_execution(logger, message, level=logging.WARNING):
+def log_execution(logger, message, level=logging.WARNING, **kwargs)
     """
-    helper function to log in case a logger is provided (does nothing when logger is None)
-    level determines the nature of the message that is being loggede
-        logging.INFO
-        logging.WARNING
+    Helper function to log in case a logger is provided. Falls back to print.
+    Accepts kwargs (like exc_info=True) to pass directly to the logger.
+
+    Parameters
+    ----------
+
+    logger : logging.Logger
+        A logger object
+    message : str
+        The string that is to be recorded by the logging function 
+
+    See Also
+    --------
+
+    src.cube.spatiotemporal.spatiotemporal_cube._setup_pipeline_logger
     """
     if logger:
-        logger.log(level, message)
+        logger.log(level, message, **kwargs)
+    # Setup safeguard to print message when logger is None
+    else:
+        print(message)
