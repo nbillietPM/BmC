@@ -1,6 +1,6 @@
 import logging
 
-def log_execution(logger, message, level=logging.WARNING, **kwargs)
+def log_execution(logger, message, level=logging.WARNING, **kwargs):
     """
     Helper function to log in case a logger is provided. Falls back to print.
     Accepts kwargs (like exc_info=True) to pass directly to the logger.

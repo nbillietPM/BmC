@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bmc"
+version = "0.1.0"
+description = "Biodiversity meets Cubes - Biodiversity and abiotic data cubing engine for the biodiversity meets data project"
+readme = "README.md"
+requires-python = ">=3.12"
+
+# Note: We deliberately leave the 'dependencies' list empty here!
+# If we list them here, pip will try to compile GDAL from scratch and fail.
+# We rely on Conda (environment.yml) to provide the dependencies safely.
+
+[tool.setuptools]
+# This tells setuptools that the root of your packages is inside the 'src' directory
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+# This tells setuptools to only look for packages inside 'src'
+where = ["src"]

@@ -1,10 +1,32 @@
 # Biodiversity meets Cubes
-A repository aimed at the development of the cubing engine that combines biodiversity data with abiotic data to produce data cubes ready for use within the VRE's of the BmD project
 
-## Running the code
+A repository aimed at the development of the cubing engine that combines biodiversity data with abiotic data to produce data cubes ready for use within the VRE's of the BmD project.
 
-The source code for this project is built upon the user specifying the parameters of interest within the `param.yaml` file within the `/config` directory. This yaml file will be read by the data cube constructor functions which will subsequently retrieve all relevant and desired data.
+## Repository Setup
 
-Required input data and output data will be stored within the prespecified data directory on the highest level of the directory. If the user wishes to change these paths, the `config.yaml` file within the `/config` directory needs to be modified to reflect this.
+This project uses a dual-file packaging strategy to safely handle complex geospatial dependencies (like GDAL and Xarray) across different operating systems. 
 
-A full explaination is given in the notebook `data_generation` which can be found in the `/scripts/prototype` directory. 
+* **`environment.yml`**: Uses Conda to install the heavy, C++ backed spatial libraries.
+* **`pyproject.toml`**: Uses Pip to install the local cubing engine code as an importable Python package.
+
+**Prerequisites:** You must have [Conda](https://docs.conda.io/en/latest/miniconda.html) or [Micromamba](https://mamba.readthedocs.io/en/latest/installation/micromamba-installation.html) installed on your system.
+
+### Step 1: Build the geospatial environment
+
+Navigate to the root of the cloned repository and create the Conda environment using the `.yml` file:
+
+```bash
+conda env create -f environment.yml
+```
+
+### Step 2: Activate the environment
+
+```bash
+conda activate BmC
+```
+
+### Step 3: Install the local cubing engine
+
+```bash
+pip install -e .
+```

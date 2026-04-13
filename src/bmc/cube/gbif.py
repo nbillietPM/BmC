@@ -1,5 +1,5 @@
-from datasource.gbif import layer
-from .spatiotemporal import *
+from bmc.datasource.gbif import layer
+from bmc.cube.spatiotemporal import *
 import yaml
 import os
 import pandas as pd

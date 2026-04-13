@@ -4,9 +4,6 @@ from hda import Client
 import zipfile
 import shutil
 from pathlib import Path
-import pandas as pd
-import json
-import logging
 
 def get_dataset_variables(dataset_id: str, wekeo_client: Client):
     """
@@ -26,6 +23,10 @@ def get_dataset_variables(dataset_id: str, wekeo_client: Client):
     except Exception as e:
         print(f"Error fetching schema: {e}")
         return None
+    
+import pandas as pd
+import json
+import logging
 
 def intersect_config_with_dataframe(config, inventory_csv_path, target_res="100m", logger=None):
     """
