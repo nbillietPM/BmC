@@ -5,9 +5,7 @@ import json
 from bmc.utils.logger import log_execution
 
 class wekeo_cube(spatiotemporal_cube):
-    # config.py
-
-    PRODUCT_TYPE_MAPPINGS = {
+    _PRODUCT_TYPE_MAPPINGS = {
     # --- CROPLAND (CRL) CATEGORICAL PRODUCTS ---
     "Crop Types": {
         1110: "Wheat", 1120: "Barley", 1130: "Maize", 1140: "Rice", 

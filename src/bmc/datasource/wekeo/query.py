@@ -5,7 +5,6 @@ import pandas as pd
 
 
 
-
 def generate_wekeo_query(dataset_id: str, 
                          product_type: str, 
                          year: str = None, 
