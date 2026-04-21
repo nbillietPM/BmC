@@ -15,6 +15,14 @@ import xarray as xr
 import rioxarray
 
 class wekeo_cube(spatiotemporal_cube):
+    """
+    Dataset identifiers associated with desired wekeo datasets in the event that future 
+    additions are made to this, assure that its change does not interfere with the working
+    of the other functions
+        - regenerate data inventory
+        - check if generate_query works for the producttypes
+        - if categorical be sure to append the class values to the CATEGORICAL_CLASSES attr
+    """
     DATASET_MAP = {
         "TCF": "EO:EEA:DAT:HRL:TCF",
         "GRA": "EO:EEA:DAT:HRL:GRA",
@@ -159,17 +167,17 @@ class wekeo_cube(spatiotemporal_cube):
         """
         if not logger:
             logger = self.wekeo_logger
-
+        # Extract the id from the query
         dataset_id = wekeo_query.get("dataset_id", "UNKNOWN_DATASET")
         log_execution(logger, f"===={dataset_id}====", logging.INFO)
-        
+    
         pretty_query = json.dumps(wekeo_query, indent=4)
         indented_block = "\n    " + pretty_query.replace("\n", "\n    ")
         log_execution(logger, f"Executing search query...{indented_block}", logging.INFO)
-
+        # Get all matches from the query
         response = wekeo_client.search(wekeo_query)
         
-        # --- BUG FIX: Check if response has results or is fundamentally empty ---
+        # Check if response has results or is fundamentally empty
         try:
             is_empty = not response or len(getattr(response, 'results', [])) == 0
         except Exception:
@@ -182,6 +190,7 @@ class wekeo_cube(spatiotemporal_cube):
         log_execution(logger, f"Downloading response to {base_dir}...", logging.INFO)
         response.download(download_dir=base_dir) # Use base_dir directly
         
+        # Extract the tif files from their zipped folders
         self.gather_tifs_from_zips(
             source_directory=base_dir, 
             target_directory=os.path.join(base_dir, "tif_files"),
@@ -229,16 +238,46 @@ class wekeo_cube(spatiotemporal_cube):
             ) -> bool:
         """
         Validates user-requested WEkEO product types against the ground-truth API inventory.
-        Now supports resolution strategy validation.
+
+        This internal method acts as a pre-execution safeguard. It ensures that the 
+        products requested in the YAML configuration actually exist in the compiled 
+        metadata inventory before the pipeline attempts to query the API. It also 
+        validates specific resolution overrides, issuing a warning if an exact 
+        resolution match is unavailable.
+
+        Parameters
+        ----------
+        recipe : dict
+            A dictionary containing the parsed execution recipe. Expected to contain 
+            nested configuration under `['sources']['wekeo']`.
+        inventory_df : pandas.DataFrame
+            The ground-truth API inventory loaded as a DataFrame. Must contain at least 
+            the columns 'productType' and 'resolution'.
+        logger : logging.Logger, optional
+            The logger instance used to record validation steps, warnings for missing 
+            resolutions, and errors for missing products. Default is None.
+
+        Returns
+        -------
+        bool
+            True if all requested products are found in the inventory, or if the WEkEO 
+            pipeline is explicitly disabled. False if one or more requested products 
+            are completely missing from the inventory. 
+            
+            Note: Invalid resolution targets only generate a warning to the logger and 
+            do not cause the function to return False, as the resolver will fallback 
+            to the best available option.
         """
         is_valid = True
+        # Retrieve requested wekeo section
         wekeo_config = recipe.get('sources', {}).get('wekeo', {})
         
         if not wekeo_config.get('enabled', False):
             log_execution(logger, "WEkEO pipeline is disabled in recipe. Skipping validation.", logging.INFO)
             return True
-            
+        
         datasets_config = wekeo_config.get('datasets', {})
+        # Generate list of products that can be requested
         available_products = set(inventory_df['productType'].dropna().unique())
         
         for category, cat_config in datasets_config.items():
@@ -257,8 +296,7 @@ class wekeo_cube(spatiotemporal_cube):
                     if target_res and target_res not in ['highest', 'lowest']:
                         prod_res = inventory_df[inventory_df['productType'] == product]['resolution'].unique()
                         if target_res not in prod_res:
-                            log_execution(logger, f"Warning: Specific resolution '{target_res}' for '{product}' not in inventory. Resolver will pick best available.", logging.WARNING)
-                    
+                            log_execution(logger, f"Warning: Specific resolution '{target_res}' for '{product}' not in inventory. Resolver will pick best available.", logging.WARNING)          
         return is_valid
 
     def intersect_config_with_dataframe(
@@ -310,7 +348,7 @@ class wekeo_cube(spatiotemporal_cube):
                 If the requested configuration products cannot be validated against 
                 the ground-truth inventory.
             """
-            # 1. Try fetching static meta, fallback to dynamic build
+            # Try fetching static meta, fallback to dynamic build
             try:
                 df = fetch_meta(inventory_filename, logger=logger)
                 log_execution(logger, f"Successfully loaded pre-compiled inventory: '{inventory_filename}'", logging.INFO)
@@ -324,13 +362,13 @@ class wekeo_cube(spatiotemporal_cube):
                 
                 df = build_data_inventory(
                     api_schema=api_schema,
-                    dataset_map=self.DATASET_MAP,  # <--- Using the class attribute directly
+                    dataset_map=self.DATASET_MAP,
                     wekeo_client=wekeo_client,
                     output_filepath=str(target_path),
                     logger=logger
                 )
 
-            # 2. Validate user config against the resulting DataFrame
+            # Validate user config against the resulting DataFrame
             if not self._validate_config_products(recipe, df, logger):
                 raise ValueError("Recipe validation failed. Check inventory logs.")
             
@@ -422,7 +460,7 @@ class wekeo_cube(spatiotemporal_cube):
                                 bbox=query_bbox
                             ))
                             log_execution(logger, f"Queued: {product} ({year}) at {resolved_res}", logging.INFO)
-                        
+                      
             return execution_queue
     
     def validate_datalake(
@@ -488,14 +526,24 @@ class wekeo_cube(spatiotemporal_cube):
 
         all_passed = True
 
-        # 1. Discover and Group Data by Product and Year
+        # Discover and Group Data by Product and Year
         lake_catalog = {}
+        """
+        glob (short for "global") refers to the process of using wildcard characters to find specific files 
+        or directories based on patterns, rather than typing out exact filenames. rglob (short for recursive glob) 
+        lies in how deep they look into your folders. While both are used to find files matching a pattern, they 
+        differ in their "scope" of vision. rglob (Recursive): It is deep. It automatically searches the current directory 
+        and every single sub-directory beneath it, no matter how many levels down they go.
+        """
         for tif_path in base_path.rglob("*.tif"):
+            # Separate the path into the different hierarchical levels
             parts = tif_path.parts
+            # General structure is 'lake_name/dataset_id/productType/aggregation/*tif'
             if len(parts) < 4: continue
             
             category, product, aggregation = parts[-4], parts[-3], parts[-2]
             
+            # Regular expression match to fit anything 19XX or 20XX where X can be any digit
             year_match = re.search(r'(19\d{2}|20\d{2})', tif_path.name)
             year = int(year_match.group(1)) if year_match else "AllYears"
             
@@ -513,7 +561,8 @@ class wekeo_cube(spatiotemporal_cube):
         def load_da(path):
             return rioxarray.open_rasterio(path, masked=True, chunks={'x': 2048, 'y': 2048}).squeeze()
 
-        # 2. Execute Validations
+        # Execute Validations
+        # Perform iteration per product to validate all time slices consecutively
         for category, products in lake_catalog.items():
             for product, years in products.items():
                 for year, layers in years.items():
@@ -526,9 +575,12 @@ class wekeo_cube(spatiotemporal_cube):
                         fraction_das = []
                         for frac_path in layers['coverage']:
                             da = load_da(frac_path)
+                            # Load in the data array associated with a fraction
                             fraction_das.append(da)
                             class_name = frac_path.stem.split(f"{year}_")[-1] 
                             
+                            # Identify pixels where the value dips below 0 or above 1
+                            # generates binary masks that sum up to the number of pixels that violate the rule
                             under_0 = (da < -tolerance).sum().compute().item()
                             over_1 = (da > (1.0 + tolerance)).sum().compute().item()
                             
@@ -537,11 +589,14 @@ class wekeo_cube(spatiotemporal_cube):
                             else:
                                 log_execution(logger, f"    -> {class_name} Bounds [0,1]: ❌ ({under_0} < 0, {over_1} > 1)", logging.WARNING)
                                 all_passed = False
-                            
+                        
                         if len(fraction_das) > 1:
+                            # Fill in NaN values with 0 (invalid to sum numbers with a NaN) and sum arrays pixel wise
                             total_coverage = sum([da.fillna(0) for da in fraction_das])
+                            # Valid mask serves as safety net to differentiate between valid 0's and NaN values and will return a 
+                            # Binary mask that defines regions where there is actual information
                             valid_mask = sum([da.notnull() for da in fraction_das]) > 0
-                            
+                            # Verifies the existence of pixels where the total sum exceeds 100%
                             over_100 = ((total_coverage > (1.0 + tolerance)) & valid_mask).sum().compute().item()
                             
                             if over_100 == 0:
@@ -688,14 +743,13 @@ class wekeo_cube(spatiotemporal_cube):
         if not wekeo_config.get("enabled", False):
             return []
 
-        # --- FIX 1: Use 'wekeo_client' instead of the undefined 'c' variable ---
+        #Generate the metadata schema in case the data inventory is absent from the repository
         metadata_schema = dict(zip(
             [key for key in self.DATASET_MAP.keys()],
             [get_dataset_variables(self.DATASET_MAP[key], wekeo_client)["constraints"][0] for key in self.DATASET_MAP.keys()]
         ))
 
-        # --- FIX 2: Pass exactly what the newly updated intersect function expects ---
-
+        # Generate the different queries based on the recipe
         execution_queue = self.intersect_config_with_dataframe(
             recipe=recipe, 
             wekeo_client=wekeo_client, 
@@ -719,7 +773,6 @@ class wekeo_cube(spatiotemporal_cube):
             safe_name = f"{clean_product}_{year}"
             log_execution(active_logger, f"\n{'='*50}\nBuilding Data Lake Layer: {safe_name}\n{'='*50}", logging.INFO)
 
-            # --- FIX 3: Re-implement the clean 'wekeo/dataset_id/product_layer' logic ---
             # Force the clean 'wekeo/dataset_id/product_layer' schema
             safe_dataset_id = dataset_id.replace(":", "_")
             isolated_raw_dir = os.path.join(raw_dir, "wekeo", safe_dataset_id, clean_product)
@@ -732,23 +785,25 @@ class wekeo_cube(spatiotemporal_cube):
                 logger=active_logger
             )
 
+            # Force the code to continue even when fetch_unpack returns None
             if not download_dir:
                 continue
 
             tif_folder = os.path.join(download_dir, "tif_files")
             vrt_path = os.path.join(tif_folder, f"{safe_name}.vrt")
+
+            # Build the VRT based on the tif files being present and force continue if nothing is present
             if not self.build_virtual_mosaic(tif_folder, vrt_path, active_logger):
                 continue
 
-            # B. Categorical Processing (Single-Band Fractional Coverages)
+            # Categorical Processing (Single-Band Fractional Coverages)
             if product_type in self.CATEGORICAL_CLASSES:
                 discrete_strat = resampling_config.get('discrete', 'coverage')
-                
                 if discrete_strat == 'coverage':
                     aggr_name = "coverage"
                     layer_dir = os.path.join(base_dir, dataset_cat, clean_product, aggr_name)
                     os.makedirs(layer_dir, exist_ok=True)
-                    
+                    # Consitent filename schema
                     file_prefix = f"{clean_product}_{year}_{target_grid}_{target_res}"
                     
                     log_execution(active_logger, "Processing as Single-Band Categorical Fractions...", logging.INFO)
@@ -770,12 +825,13 @@ class wekeo_cube(spatiotemporal_cube):
                         )
                         
                         generated_cogs.extend(fraction_cogs)
+                        # After data has been safely written, force interpreter to free up RAM resources
                         gc.collect()
                         
                     except Exception as e:
                         log_execution(active_logger, f"Failed fractional coverage for {safe_name}: {e}", logging.ERROR)
 
-            # C. Continuous Processing (Multiple Statistics)
+            # Continuous Processing (Multiple Statistics)
             else:
                 cont_stats = resampling_config.get('continuous', ['average'])
                 if isinstance(cont_stats, str):
@@ -812,9 +868,9 @@ class wekeo_cube(spatiotemporal_cube):
                     except Exception as e:
                         log_execution(active_logger, f"Failed statistic '{stat}' for {safe_name}: {e}", logging.ERROR)
 
-        # --- FIX 4: Re-implement the cleanup function at the very end ---
+        # Clean up disc space if keep_raw is set to False in recipe
         self.cleanup_raw_storage(recipe=recipe, logger=active_logger)
-
+        # Validate the logic and consistency of the generated datalake
         self.validate_datalake(base_dir=base_dir, logger=active_logger)
 
         log_execution(active_logger, "\n=== WEkEO Data Lake Ingestion Complete ===", logging.INFO)
