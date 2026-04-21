@@ -10,6 +10,9 @@ import pandas as pd
 from typing import Dict, Any, Optional, List
 import urllib
 from pathlib import Path
+import re
+import xarray as xr
+import rioxarray
 
 class wekeo_cube(spatiotemporal_cube):
     DATASET_MAP = {
@@ -422,6 +425,208 @@ class wekeo_cube(spatiotemporal_cube):
                         
             return execution_queue
     
+    def validate_datalake(
+        self, 
+        base_dir: str, 
+        tolerance: float = 0.0001, 
+        logger: Optional[logging.Logger] = None
+    ) -> bool:
+        """
+        Dynamically crawls a structured data lake and performs strict mathematical 
+        and ecological QA validations on all detected continuous and categorical datasets.
+
+        This function acts as the final gatekeeper in the data pipeline, ensuring that 
+        the spatial resampling and aggregations (performed by GDAL) did not introduce 
+        mathematical artifacts, NoData poisoning, or physical impossibilities.
+
+        Parameters
+        ----------
+        base_dir : str
+            The root directory of the generated data lake to be validated.
+        tolerance : float, optional
+            The acceptable floating-point tolerance for mathematical comparisons. 
+            GDAL aggregations often introduce microscopic drift (e.g., summing to 1.0000001). 
+            Default is 0.0001.
+        logger : logging.Logger, optional
+            The logger instance used to record validation progress and flag violations. 
+            Default is None.
+
+        Returns
+        -------
+        bool
+            True if all QA tests pass with zero violations. False if any pixels 
+            violate the mathematical or ecological rules.
+
+        Notes
+        -----
+        The validation engine performs three primary categories of tests:
+
+        1. Categorical Fractional Boundaries & Sums:
+           - Bounds Check: Ensures all fractional pixels are bounded strictly between 0.0 and 1.0.
+           - Mutually Exclusive Summation: Sums all classes within a single product 
+             (e.g., Broadleaved + Coniferous) and verifies they do not exceed 100%. 
+             This prevents spatial double-counting.
+
+        2. Continuous Mathematical Inequalities:
+           - Validates the statistical logic of the GDAL warp engine by ensuring the 
+             aggregated pixels obey variance mathematics: Min <= Average <= RMS <= Max.
+
+        3. Cross-Layer Ecological Logic:
+           - Validates physical reality across completely different datasets. 
+           - Example: If the continuous "Tree Cover Density" layer states the Maximum 
+             density for a 100m pixel is 0%, the fractional "Forest Type" layer must 
+             allocate exactly 0% to both Broadleaved and Coniferous classes.
+        """
+        import re
+
+        base_path = Path(base_dir)
+        log_execution(logger, f"\n=== Initiating Global QA Sweep on: {base_path.absolute()} ===", logging.INFO)
+        
+        if not base_path.exists():
+            log_execution(logger, f"[!] Target directory does not exist: {base_dir}", logging.ERROR)
+            return False
+
+        all_passed = True
+
+        # 1. Discover and Group Data by Product and Year
+        lake_catalog = {}
+        for tif_path in base_path.rglob("*.tif"):
+            parts = tif_path.parts
+            if len(parts) < 4: continue
+            
+            category, product, aggregation = parts[-4], parts[-3], parts[-2]
+            
+            year_match = re.search(r'(19\d{2}|20\d{2})', tif_path.name)
+            year = int(year_match.group(1)) if year_match else "AllYears"
+            
+            if category not in lake_catalog: lake_catalog[category] = {}
+            if product not in lake_catalog[category]: lake_catalog[category][product] = {}
+            if year not in lake_catalog[category][product]: lake_catalog[category][product][year] = {}
+            
+            if aggregation == 'coverage':
+                if 'coverage' not in lake_catalog[category][product][year]:
+                    lake_catalog[category][product][year]['coverage'] = []
+                lake_catalog[category][product][year]['coverage'].append(tif_path)
+            else:
+                lake_catalog[category][product][year][aggregation] = tif_path
+
+        def load_da(path):
+            return rioxarray.open_rasterio(path, masked=True, chunks={'x': 2048, 'y': 2048}).squeeze()
+
+        # 2. Execute Validations
+        for category, products in lake_catalog.items():
+            for product, years in products.items():
+                for year, layers in years.items():
+                    log_execution(logger, f"\n--- Validating: {category} | {product} | {year} ---", logging.INFO)
+                    
+                    # ==========================================
+                    # TEST A: Categorical Fractional Boundaries & Sums
+                    # ==========================================
+                    if 'coverage' in layers:
+                        fraction_das = []
+                        for frac_path in layers['coverage']:
+                            da = load_da(frac_path)
+                            fraction_das.append(da)
+                            class_name = frac_path.stem.split(f"{year}_")[-1] 
+                            
+                            under_0 = (da < -tolerance).sum().compute().item()
+                            over_1 = (da > (1.0 + tolerance)).sum().compute().item()
+                            
+                            if under_0 == 0 and over_1 == 0:
+                                log_execution(logger, f"    -> {class_name} Bounds [0,1]: ✅", logging.INFO)
+                            else:
+                                log_execution(logger, f"    -> {class_name} Bounds [0,1]: ❌ ({under_0} < 0, {over_1} > 1)", logging.WARNING)
+                                all_passed = False
+                            
+                        if len(fraction_das) > 1:
+                            total_coverage = sum([da.fillna(0) for da in fraction_das])
+                            valid_mask = sum([da.notnull() for da in fraction_das]) > 0
+                            
+                            over_100 = ((total_coverage > (1.0 + tolerance)) & valid_mask).sum().compute().item()
+                            
+                            if over_100 == 0:
+                                log_execution(logger, f"    -> Aggregate Sum <= 100%: ✅", logging.INFO)
+                            else:
+                                log_execution(logger, f"    -> Aggregate Sum <= 100%: ❌ ({over_100} pixels violated)", logging.WARNING)
+                                all_passed = False
+
+                    # ==========================================
+                    # TEST B: Continuous Mathematical Inequalities
+                    # ==========================================
+                    else:
+                        da_min = load_da(layers.get('min')) if 'min' in layers else None
+                        da_avg = load_da(layers.get('average')) if 'average' in layers else None
+                        da_rms = load_da(layers.get('rms')) if 'rms' in layers else None
+                        da_max = load_da(layers.get('max')) if 'max' in layers else None
+                        
+                        if da_min is not None and da_avg is not None:
+                            min_gt_avg = (da_min > (da_avg + tolerance)).sum().compute().item()
+                            if min_gt_avg == 0:
+                                log_execution(logger, "    -> Math Check (Min <= Avg): ✅", logging.INFO)
+                            else:
+                                log_execution(logger, f"    -> Math Check (Min <= Avg): ❌ ({min_gt_avg} violations)", logging.WARNING)
+                                all_passed = False
+                        
+                        if da_avg is not None and da_rms is not None:
+                            avg_gt_rms = (da_avg > (da_rms + tolerance)).sum().compute().item()
+                            if avg_gt_rms == 0:
+                                log_execution(logger, "    -> Math Check (Avg <= RMS): ✅", logging.INFO)
+                            else:
+                                log_execution(logger, f"    -> Math Check (Avg <= RMS): ❌ ({avg_gt_rms} violations)", logging.WARNING)
+                                all_passed = False
+
+                        if da_rms is not None and da_max is not None:
+                            rms_gt_max = (da_rms > (da_max + tolerance)).sum().compute().item()
+                            if rms_gt_max == 0:
+                                log_execution(logger, "    -> Math Check (RMS <= Max): ✅", logging.INFO)
+                            else:
+                                log_execution(logger, f"    -> Math Check (RMS <= Max): ❌ ({rms_gt_max} violations)", logging.WARNING)
+                                all_passed = False
+
+        # ==========================================
+        # TEST C: Global Cross-Layer Ecological Logic
+        # ==========================================
+        log_execution(logger, "\n--- Running Cross-Layer Dependencies ---", logging.INFO)
+        
+        if 'TCF' in lake_catalog and 'Tree_Cover_Density' in lake_catalog['TCF'] and 'Forest_Type' in lake_catalog['TCF']:
+            for year in lake_catalog['TCF']['Tree_Cover_Density'].keys():
+                if year in lake_catalog['TCF']['Forest_Type']:
+                    max_tcd_path = lake_catalog['TCF']['Tree_Cover_Density'][year].get('max')
+                    forest_coverages = lake_catalog['TCF']['Forest_Type'][year].get('coverage', [])
+                    
+                    if max_tcd_path and forest_coverages:
+                        tcd_max = load_da(max_tcd_path)
+                        total_forest = sum([load_da(p).fillna(0) for p in forest_coverages])
+                        
+                        impossible_forests = ((total_forest > 0.01) & (tcd_max == 0)).sum().compute().item()
+                        if impossible_forests == 0:
+                            log_execution(logger, f"  [TCF] {year} | 0% Max Density -> 0% Forest Fraction: ✅", logging.INFO)
+                        else:
+                            log_execution(logger, f"  [TCF] {year} | 0% Max Density -> 0% Forest Fraction: ❌ ({impossible_forests} violations)", logging.WARNING)
+                            all_passed = False
+
+        if 'IMP' in lake_catalog and 'Imperviousness_Density' in lake_catalog['IMP'] and 'Impervious_Built-up' in lake_catalog['IMP']:
+            for year in lake_catalog['IMP']['Imperviousness_Density'].keys():
+                 if year in lake_catalog['IMP']['Impervious_Built-up']:
+                    max_imp_path = lake_catalog['IMP']['Imperviousness_Density'][year].get('max')
+                    builtup_coverages = lake_catalog['IMP']['Impervious_Built-up'][year].get('coverage', [])
+                    
+                    if max_imp_path and builtup_coverages:
+                        imp_max = load_da(max_imp_path)
+                        total_built = sum([load_da(p).fillna(0) for p in builtup_coverages])
+                        
+                        impossible_built = ((total_built > 0.01) & (imp_max == 0)).sum().compute().item()
+                        if impossible_built == 0:
+                            log_execution(logger, f"  [IMP] {year} | 0% Max Density -> 0% Built-up Fraction: ✅", logging.INFO)
+                        else:
+                            log_execution(logger, f"  [IMP] {year} | 0% Max Density -> 0% Built-up Fraction: ❌ ({impossible_built} violations)", logging.WARNING)
+                            all_passed = False
+
+        status_msg = "PASSED" if all_passed else "FAILED (See Warnings)"
+        log_execution(logger, f"\n=== Global QA Sweep Complete: {status_msg} ===", logging.INFO if all_passed else logging.WARNING)
+        
+        return all_passed
+
     def build_wekeo_datalake(
         self, 
         recipe: Dict[str, Any], 
@@ -609,6 +814,8 @@ class wekeo_cube(spatiotemporal_cube):
 
         # --- FIX 4: Re-implement the cleanup function at the very end ---
         self.cleanup_raw_storage(recipe=recipe, logger=active_logger)
+
+        self.validate_datalake(base_dir=base_dir, logger=active_logger)
 
         log_execution(active_logger, "\n=== WEkEO Data Lake Ingestion Complete ===", logging.INFO)
         return generated_cogs
