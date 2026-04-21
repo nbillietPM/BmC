@@ -10,8 +10,13 @@ import glob
 import rioxarray
 from osgeo import gdal
 import logging
-from typing import Optional, Union, Any
+from typing import Optional, Union, Dict, Any, List
 from bmc.utils.logger import log_execution
+import yaml
+import sys
+import os
+import shutil
+
 
 class spatiotemporal_cube():
     _GDAL_RESAMPLERS = {
@@ -111,7 +116,7 @@ class spatiotemporal_cube():
         See Also
         --------
 
-        src.utils.logger.log_execution
+        bmc.utils.logger.log_execution
         
         """
         # Initialize the logger
@@ -150,7 +155,411 @@ class spatiotemporal_cube():
         
         return logger
 
+    def resolve_grid_registry_key(
+        self, 
+        target_grid: str, 
+        target_resolution: str, 
+        logger: Optional[logging.Logger] = None
+    ) -> str:
+        """
+        Dynamically constructs and validates the master grid key from user configuration.
+
+        Parameters
+        ----------
+        target_grid : str
+            The base coordinate reference system identifier (e.g., "EEA", "Global_WGS84").
+        target_resolution : str
+            The spatial resolution string (e.g., "100m", "10km", "30sec").
+        logger : logging.Logger, optional
+            The logger instance to record the error if the key doesn't exist. Default is None.
+
+        Returns
+        -------
+        grid_key : str
+            The validated dictionary key used to access `self.GRID_REGISTRY`.
+
+        Raises
+        ------
+        ValueError
+            If the concatenated string does not match a predefined grid.
+        """
+        grid_key = f"{target_grid}_{target_resolution}"
+        
+        if grid_key not in self.GRID_REGISTRY:
+            available = "\n - ".join(self.GRID_REGISTRY.keys())
+            error_msg = (
+                f"\n[Spatial Config Error] Attempted to build grid key '{grid_key}', "
+                f"but it does not exist in the registry.\n\n"
+                f"Available Grids:\n - {available}"
+            )
+            # Log the critical error before stopping execution
+            log_execution(logger, error_msg, logging.ERROR)
+            raise ValueError(error_msg)    
+            
+        return grid_key
     
+    def _parse_res_to_meters(self, res_str: str) -> float:
+        """
+        Converts a resolution string (e.g., '10m', '1km') into a float in meters.
+        
+        This helper is required for mathematical comparisons between different 
+        available raw data resolutions.
+        """
+        res_str = res_str.lower().strip()
+        if 'km' in res_str:
+            return float(res_str.replace('km', '')) * 1000
+        elif 'm' in res_str:
+            return float(res_str.replace('m', ''))
+        else:
+            # Fallback for unexpected formats (like arc-seconds)
+            # You can extend this logic as needed for Global_WGS84 grids
+            return 999999.0
+
+    def _resolve_query_resolution(
+        self, 
+        strategy: str, 
+        available_res: List[str], 
+        logger: Optional[logging.Logger] = None
+    ) -> str:
+        """
+        Determines the single best resolution string to use based on a strategy.
+
+        Parameters
+        ----------
+        strategy : str
+            Options: 'highest' (smallest meters), 'lowest' (largest meters), 
+            or a specific value like '20m'.
+        available_res : list of str
+            The unique resolution strings found in the inventory for a specific product.
+        """
+        if strategy not in ['highest', 'lowest'] and strategy in available_res:
+            return strategy
+            
+        # Create a mapping: {meters: 'string_name'}
+        res_map = {self._parse_res_to_meters(r): r for r in available_res}
+        
+        if not res_map:
+            return "UNKNOWN"
+
+        if strategy == 'highest':
+            # Smallest distance = Highest resolution
+            return res_map[min(res_map.keys())]
+        elif strategy == 'lowest':
+            # Largest distance = Lowest resolution
+            return res_map[max(res_map.keys())]
+        else:
+            # If a specific res was requested but isn't available, 
+            # we default to 'highest' and log a warning.
+            best_guess = res_map[min(res_map.keys())]
+            log_execution(
+                logger, 
+                f"Requested query resolution '{strategy}' not found. Falling back to highest available: {best_guess}", 
+                logging.WARNING
+            )
+            return best_guess
+
+    def export_to_cog(
+        self, 
+        ds: Union[xr.DataArray, xr.Dataset], 
+        output_filepath: str, 
+        compress_mode: str = "deflate",
+        logger: Optional[logging.Logger] = None
+    ) -> str:
+        """
+        Exports an xarray object to disk as a Cloud Optimized GeoTIFF (COG).
+
+        Parameters
+        ----------
+        ds : xarray.DataArray or xarray.Dataset
+            The spatial data to be exported. If a Dataset is provided, it iterates 
+            and saves each variable as a separate COG (or bands, depending on structure).
+        output_filepath : str
+            The target file path (must end in .tif).
+        compress_mode : str, optional
+            The compression algorithm. 'deflate' is highly recommended for SDM data.
+        logger : logging.Logger, optional
+            Logger for recording execution progress.
+
+        Returns
+        -------
+        output_filepath : str
+            The path to the successfully created COG.
+        """
+        log_execution(logger, f"Exporting to Cloud Optimized GeoTIFF: {output_filepath}", logging.INFO)
+        
+        # Ensure the directory exists
+        os.makedirs(os.path.dirname(os.path.abspath(output_filepath)), exist_ok=True)
+
+        try:
+            # rioxarray has native support for the GDAL COG driver
+            if isinstance(ds, xr.Dataset):
+                # For datasets (like fractional coverages), we can write them out 
+                # as multi-band COGs or iteratively. rioxarray handles Datasets by 
+                # writing each data_var as a band if they share coordinates.
+                ds.rio.to_raster(
+                    output_filepath,
+                    driver="COG",
+                    compress=compress_mode,
+                    tiled=True,
+                    windowed=True # Crucial for keeping RAM usage low during write
+                )
+            else:
+                ds.rio.to_raster(
+                    output_filepath,
+                    driver="COG",
+                    compress=compress_mode,
+                    tiled=True,
+                    windowed=True
+                )
+            
+            log_execution(logger, f"COG successfully generated.", logging.INFO)
+            return output_filepath
+
+        except Exception as e:
+            log_execution(logger, f"Failed to export COG: {e}", logging.ERROR, exc_info=True)
+            raise
+
+    def generate_cube_recipe(self, config_path: str, logger: Optional[logging.Logger] = None) -> Dict[str, Any]:
+        """
+        Parses a YAML configuration file and generates a standardized execution recipe.
+
+        This base-class method handles universal data cube setup tasks. It reads the 
+        user's YAML file, creates the master output directory structures, and dynamically 
+        resolves the spatial mathematical grid. By centralizing this logic, all child 
+        data cubes (e.g., WEkEO, Earth Engine, GBIF) share the exact same spatial and 
+        file-system foundations. It explicitly separates the core engine parameters 
+        from the diverse data payload APIs nested under the 'sources' block.
+
+        Parameters
+        ----------
+        config_path : str
+            The absolute or relative file path to the user's YAML configuration file.
+        logger : logging.Logger, optional
+            The logger instance to use for recording execution messages. Default is None.
+
+        Returns
+        -------
+        recipe : dict
+            A highly structured dictionary containing the parsed configuration, derived 
+            operational paths, safely resolved spatial parameters, and isolated data 
+            source configurations.
+            
+        Raises
+        ------
+        FileNotFoundError
+            If the specified YAML config path does not exist on the file system.
+        ValueError
+            If the YAML is malformed, or if the requested target grid and resolution 
+            cannot be successfully resolved against the internal `GRID_REGISTRY`.
+
+        See Also
+        --------
+        resolve_grid_registry_key : The internal method used to validate the spatial grid.
+        """
+        # Extract the base name immediately so we have a fallback name if things go wrong
+        yaml_basename = os.path.splitext(os.path.basename(config_path))[0]
+
+        if not logger:
+            print(f"Attempting to load configuration from: {config_path}")
+        else:
+            log_execution(logger, f"Attempting to load configuration from: {config_path}", logging.INFO)
+
+        # 1. Load the YAML Configuration with Emergency Crash Logging
+        try:
+            with open(config_path, 'r') as file:
+                config = yaml.safe_load(file)
+                
+        except (FileNotFoundError, yaml.YAMLError) as exc:
+            msg = f"FATAL ERROR: Failed to load configuration from '{config_path}': {exc}"
+            
+            if logger: 
+                log_execution(logger, msg, logging.CRITICAL)
+            else:
+                # --- EMERGENCY CRASH LOGGER ---
+                # Spin up a temporary logger in the current directory to permanently record the death
+                crash_log_path = f"{yaml_basename}_CRASH.log"
+                crash_logger = self._setup_pipeline_logger(logger_name=f"{yaml_basename}_crash", log_filepath=crash_log_path)
+                log_execution(crash_logger, msg, logging.CRITICAL)
+                print(f"Critical error securely logged to: {crash_log_path}")
+                
+            # Re-raise the exact error so the execution thread properly halts
+            if isinstance(exc, yaml.YAMLError):
+                raise ValueError(msg)
+            else:
+                raise FileNotFoundError(msg)
+
+        # 2. Extract and Build Base Directory Structures
+        cube_name = config.get("cube_name", "standard_export")
+        base_out_dir = os.path.join(".", cube_name) 
+        raw_dir = os.path.join(base_out_dir, "raw_downloads")
+        
+        try:
+            os.makedirs(raw_dir, exist_ok=True)
+            
+            # --- INITIALIZE INCREMENTAL SUCCESS LOGGER ---
+            if not logger:
+                log_filepath = os.path.join(base_out_dir, f"{yaml_basename}.log")
+                
+                # Check if it exists, and increment a number until we find an empty slot
+                counter = 1
+                while os.path.exists(log_filepath):
+                    log_filepath = os.path.join(base_out_dir, f"{yaml_basename}_{counter}.log")
+                    counter += 1
+                
+                unique_logger_name = f"{cube_name}_{counter}" if counter > 1 else cube_name
+                logger = self._setup_pipeline_logger(logger_name=unique_logger_name, log_filepath=log_filepath)
+                self.wekeo_logger = logger 
+                
+            # --- RETROACTIVE SUCCESS LOGGING ---
+            log_execution(logger, f"Successfully loaded configuration from: {config_path}", logging.INFO)
+            log_execution(logger, f"Lake root directory initialized at: {base_out_dir}", logging.INFO)
+            log_execution(logger, f"Session log file created at: {log_filepath}", logging.INFO)
+            
+        except Exception as e:
+            msg = f"Failed to create lake root directory: {e}"
+            if logger: log_execution(logger, msg, logging.ERROR, exc_info=True)
+            else: print(msg)
+            raise
+
+        # 3. Resolve Spatial Grid via the Helper Function
+        spatial_config = config.get('spatial', {})
+        base_grid = spatial_config.get('target_grid', 'EEA')
+        res = spatial_config.get('target_resolution', '100m')
+        
+        target_grid_key = self.resolve_grid_registry_key(base_grid, res, logger)
+        log_execution(logger, f"Target spatial grid safely resolved to: {target_grid_key}", logging.INFO)
+
+        # 4. Package the Standardized Recipe
+        recipe = {
+            "paths": {
+                "base_dir": base_out_dir,
+                "raw_dir": raw_dir
+            },
+            "spatial": {
+                "target_grid_key": target_grid_key,
+                "resampling_strategies": config.get('resampling', {}),
+                "bbox": spatial_config.get('bbox')
+            },
+            "temporal": config.get('temporal', {}),
+            "sources": config.get('sources', {}),
+            "raw_config": config 
+        }
+        
+        return recipe
+    
+    def gather_tifs_from_zips(
+        self, 
+        source_directory: str, 
+        target_directory: str, 
+        logger: Optional[logging.Logger] = None
+    ) -> None:
+        """
+        Iterates through zip archives in a source directory and extracts 
+        only the .tif files, flattening them into a single target directory.
+
+        This method acts as a data preparation step, isolating raw spatial 
+        arrays from nested archive structures and auxiliary metadata files 
+        prior to Virtual Raster (VRT) mosaic construction.
+
+        Parameters
+        ----------
+        source_directory : str
+            The path to the directory containing the downloaded .zip archives.
+        target_directory : str
+            The destination directory where extracted .tif files will be saved.
+            If the directory does not exist, it will be created.
+        logger : logging.Logger, optional
+            The logger instance for recording execution progress and errors. 
+            Defaults to None.
+
+        Returns
+        -------
+        None
+        """
+        import zipfile
+        import shutil
+        from pathlib import Path
+        
+        # 1. Set up the paths
+        source_path = Path(source_directory)
+        target_path = Path(target_directory)
+        
+        # Create the target directory if it doesn't exist yet
+        target_path.mkdir(parents=True, exist_ok=True)
+
+        # 2. Find all zip files in the source folder
+        zip_files = list(source_path.glob("*.zip"))
+        log_execution(logger, f"Found {len(zip_files)} zip files. Starting extraction...", logging.INFO)
+
+        # 3. Iterate over each zip file
+        for zip_file_path in zip_files:
+            try:
+                with zipfile.ZipFile(zip_file_path, 'r') as zip_ref:
+                    
+                    # Look at every file hidden inside the zip archive
+                    for file_info in zip_ref.infolist():
+                        
+                        # Check if the file is a .tif
+                        if file_info.filename.endswith('.tif'):
+                            
+                            # Extract the filename without any internal zip folder structure
+                            tif_filename = Path(file_info.filename).name 
+                            destination_file = target_path / tif_filename
+                            
+                            # 4. Copy the .tif file to the shared folder
+                            with zip_ref.open(file_info) as source_file:
+                                with open(destination_file, 'wb') as target_file:
+                                    shutil.copyfileobj(source_file, target_file)
+            except zipfile.BadZipFile:
+                log_execution(logger, f"Warning: {zip_file_path.name} is corrupted or not a valid zip file.", logging.WARNING)
+                continue
+            except Exception as e:
+                log_execution(logger, f"Error extracting from {zip_file_path.name}: {e}", logging.ERROR)
+
+        log_execution(logger, "All .tif files have been gathered successfully!", logging.INFO)
+
+    def cleanup_raw_storage(self, recipe: Dict, logger: Optional[logging.Logger] = None) -> None:
+        """
+        Safely purges the raw data directory based on the user configuration.
+
+        This function checks the execution recipe for the `keep_raw` parameter.
+        If `keep_raw` is explicitly set to False, it will aggressively remove 
+        the raw downloads directory to free up disk space. It uses `ignore_errors=True` 
+        during removal to prevent phantom file locks (e.g., [WinError 32] on Windows) 
+        from crashing the pipeline. If `keep_raw` is True or missing, the raw 
+        data is safely retained.
+
+        Parameters
+        ----------
+        recipe : dict
+            The parsed execution configuration dictionary. It is expected to contain 
+            the `keep_raw` boolean under `recipe['raw_config']['keep_raw']` and the 
+            target directory path under `recipe['paths']['raw_dir']`.
+        logger : logging.Logger, optional
+            The logger instance used to record the execution and cleanup status. 
+            Default is None.
+
+        Returns
+        -------
+        None
+            This function does not return a value.
+        """
+        keep_raw = recipe.get('raw_config', {}).get('keep_raw', True)
+        raw_dir = recipe.get('paths', {}).get('raw_dir')
+
+        if not keep_raw and raw_dir and os.path.exists(raw_dir):
+            if logger:
+                logger.info(f"keep_raw is False. Purging raw data directory: {raw_dir}")
+            try:
+                shutil.rmtree(raw_dir, ignore_errors=True)
+                if logger:
+                    logger.info("Raw data successfully deleted.")
+            except Exception as e:
+                if logger:
+                    logger.warning(f"Could not completely delete raw directory: {e}")
+        elif keep_raw:
+            if logger:
+                logger.info("keep_raw is True. Retaining raw downloaded data.")
 
     def da_layer_constructor(self, data_layer_func, param):
         """
@@ -204,7 +613,6 @@ class spatiotemporal_cube():
         combined_data_array = combined_data_array.assign_coords({dim_name: coordinates})
         return combined_data_array
         
-
     def _sanitize_spatial_geometry(
         self, 
         ds: Union[xr.DataArray, xr.Dataset], 
@@ -512,86 +920,30 @@ class spatiotemporal_cube():
 
     def calculate_fractional_coverages(
         self,
-        ds: Union[xr.DataArray, xr.Dataset], 
+        ds: Union[xr.DataArray, xr.Dataset, str], 
         grid_name: str, 
         output_dir: str, 
         class_values: Optional[list[int]] = None,
+        class_mapping: Optional[dict] = None,  # <--- NEW: Dictionary mapping ints to names
+        file_prefix: str = "fractional",
         logger: Optional[logging.Logger] = None
-    ) -> xr.Dataset:
+    ) -> List[str]:
         """
-        Calculates the fractional coverage of categorical classes snapped to a target grid.
-
-        Because categorical data (like land cover) cannot be accurately resampled directly 
-        using continuous algorithms, this method utilizes a memory-efficient binary masking 
-        technique. It iterates through each unique categorical class, isolates it as a binary 
-        presence/absence mask at the native resolution, and streams that mask through an 
-        out-of-core spatial warp using an 'average' resampling algorithm. This translates 
-        discrete pixels into mathematically precise fractional percentages per target pixel.
-
-        Parameters
-        ----------
-        ds : xarray.DataArray or xarray.Dataset
-            The high-resolution categorical input data (e.g., a lazy loaded VRT or physical file).
-            If a Dataset is provided, the first data variable is automatically extracted.
-        grid_name : str
-            The key of the target grid defined in the class `GRID_REGISTRY` 
-            (e.g., ``"EEA_1km"``) to which the fractional maps will be perfectly snapped.
-        output_dir : str
-            The directory where the individual fractional `.tif` files will be saved. 
-            The folder is created automatically if it does not exist.
-        class_values : list of int, optional
-            A specific list of integer classes to process. If ``None``, the function 
-            will pull the array into memory to automatically discover unique values. 
-            For massive datasets or lazy VRTs, providing this list manually is highly 
-            recommended to prevent RAM spikes. Default is ``None``.
-        logger : logging.Logger, optional
-            The logger instance to use for recording execution messages. Default is ``None``.
-
-        Returns
-        -------
-        xarray.Dataset
-            A unified Dataset containing lazy references to all generated fractional 
-            coverage layers. Each data variable is cleanly formatted and named as 
-            `fraction_class_{N}`.
-
-        See Also
-        --------
-        affine_reproject : The underlying method handling the out-of-core warping for each mask.
-
-        Notes
-        -----
-        The intermediate masks are created using `float32` precision to guarantee that the 
-        averaging algorithm calculates fractions accurately. `nodata` values in the source 
-        array are rigorously protected and passed through to the binary masks as `np.nan` 
-        to ensure they do not incorrectly skew the output percentages.
-
-        Examples
-        --------
-        Calculate fractional coverage for all automatically discovered classes:
-
-        >>> frac_ds = cube.calculate_fractional_coverages(
-        ...     ds=landcover_array,
-        ...     grid_name="Global_Equal_Area_500m",
-        ...     output_dir="./output/fractions/"
-        ... )
-        >>> print(frac_ds.data_vars)
-        Data variables:
-            fraction_class_1  (y, x) float32 ...
-            fraction_class_2  (y, x) float32 ...
-
-        Calculate fractional coverage for specific classes to save memory and time:
-
-        >>> target_classes = [11, 12, 41]  # E.g., Forest types
-        >>> frac_ds = cube.calculate_fractional_coverages(
-        ...     ds=landcover_array,
-        ...     grid_name="EEA_1km",
-        ...     output_dir="./output/fractions/",
-        ...     class_values=target_classes,
-        ...     logger=my_logger
-        ... )
+        Calculates the fractional coverage of categorical classes snapped to a target grid,
+        exporting each specific class as an independent Single-Band Cloud Optimized GeoTIFF.
         """
-        # Ensure the output directory exists before we start generating files
+        import os
+        import numpy as np
+        import xarray as xr
+        import rioxarray
+        from pathlib import Path
+        import gc
+
         os.makedirs(output_dir, exist_ok=True)
+        
+        if isinstance(ds, (str, Path)):
+            log_execution(logger, f"Lazy-loading categorical raster from path: {ds}", logging.INFO)
+            ds = rioxarray.open_rasterio(ds, chunks=True) 
         
         if isinstance(ds, xr.Dataset):
             var_name = list(ds.data_vars)[0]
@@ -603,19 +955,25 @@ class spatiotemporal_cube():
 
         if class_values is None:
             log_execution(logger, "Finding unique classes...", logging.INFO)
-            # For a massive file, passing the class list manually is safer!
-            # da.data accesses the underlying Dask array instead of forcing a NumPy array
             unique_vals = da.data.map_blocks(np.unique).compute()
-            unique_vals = np.unique(unique_vals) # Run unique one more time on the aggregated results
+            unique_vals = np.unique(unique_vals) 
+            class_values = [int(v) for v in unique_vals if v not in [nodata_val, np.nan]]
             
-        log_execution(logger, f"Calculating fractional coverage for {len(class_values)} classes...", logging.INFO)
+        log_execution(logger, f"Calculating single-band fractions for {len(class_values)} classes...", logging.INFO)
 
-        fractional_layers = {}
+        generated_cogs = []
 
         for cls in class_values:
-            log_execution(logger, f"\n--- Processing Class: {cls} ---", logging.INFO)
+            cls_int = int(cls)
             
-            # The Memory-Safe Magic Trick
+            if class_mapping and cls_int in class_mapping:
+                cls_name = str(class_mapping[cls_int]).replace(" ", "_").replace("/", "_").replace("-", "_")
+            else:
+                cls_name = f"class_{cls_int}"
+                
+            log_execution(logger, f"\n--- Processing Class: {cls_int} ({cls_name}) ---", logging.INFO)
+            
+            # 1. Create the Lazy Mask
             mask = (da == cls).astype(np.float32)
 
             if nodata_val is not None:
@@ -625,34 +983,61 @@ class spatiotemporal_cube():
             mask.rio.write_transform(da.rio.transform(), inplace=True)
             mask.rio.write_nodata(np.nan, inplace=True)
             
-            # Define the targeted output path for the out-of-core warp
-            file_name = f"fractional_class_{int(cls)}_{grid_name}.tif"
-            temp_out_path = os.path.join(output_dir, file_name)
+            # 2. The Disk Handoff
+            raw_mask_path = os.path.join(output_dir, f"temp_raw_mask_{cls_int}.tif")
+            temp_warp_path = os.path.join(output_dir, f"temp_warp_{cls_int}.tif") 
             
-            # Call the GDAL out-of-core reprojector via self
-            frac_da = self.affine_reproject(
-                input_data=mask, 
-                output_filepath=temp_out_path, 
+            log_execution(logger, "Streaming binary mask to disk...", logging.INFO)
+            mask.rio.to_raster(raw_mask_path, tiled=True, windowed=True)
+            
+            # 3. GDAL Warp to temporary file
+            log_execution(logger, "Executing GDAL C++ Warp...", logging.INFO)
+            
+            # --- FIX 1: Save the raw dataset to a dedicated variable ---
+            raw_frac_da = self.affine_reproject(
+                input_data=raw_mask_path, 
+                output_filepath=temp_warp_path, 
                 grid_name=grid_name, 
                 resample_keyword="average",
                 logger=logger
             )
             
-            # Clean up the Dataset structure
-            # rioxarray loads tifs with a 'band' dimension (shape: 1, y, x). 
-            # We drop the band dimension to make it a clean 2D layer (y, x).
-            frac_da = frac_da.squeeze().drop_vars("band", errors="ignore")
-            frac_da.name = f"fraction_class_{int(cls)}"
+            # Clean up the output structure into a new view
+            frac_da = raw_frac_da.squeeze().drop_vars("band", errors="ignore")
+            frac_da.name = f"fraction_{cls_name}"
             
-            fractional_layers[frac_da.name] = frac_da
+            # 4. Bake the final Cloud Optimized GeoTIFF 
+            final_cog_name = f"{file_prefix}_{cls_name}.tif"
+            final_cog_path = os.path.join(output_dir, final_cog_name)
+            
+            self.export_to_cog(frac_da, final_cog_path, logger=logger)
+            generated_cogs.append(final_cog_path)
+            
+            # 5. Clean up RAM and Disk Locks
+            raw_frac_da.close() # --- FIX 2: Explicitly close the ORIGINAL file handle ---
+            frac_da.close()     
+            del raw_frac_da
+            del frac_da
+            
+            # Force the garbage collector to run BEFORE we try to delete files
+            gc.collect()
+            
+            # --- FIX 3: Defensive File Cleanup ---
+            if os.path.exists(raw_mask_path):
+                try:
+                    os.remove(raw_mask_path)
+                except Exception as e:
+                    log_execution(logger, f"Warning: Could not delete temp mask {raw_mask_path}: {e}", logging.WARNING)
+                    
+            if os.path.exists(temp_warp_path):
+                try:
+                    os.remove(temp_warp_path) 
+                except Exception as e:
+                    log_execution(logger, f"Warning: Could not delete temp warp {temp_warp_path}: {e}", logging.WARNING)
 
-        # Combine the lazy file references into one giant Dataset
-        final_ds = xr.Dataset(fractional_layers)
-
-        log_execution(logger, f"All fractional coverages saved to '{output_dir}' and packaged.", logging.INFO)
-        
-        return final_ds
-
+        log_execution(logger, f"All {len(generated_cogs)} single-band fractional COGs baked into '{output_dir}'.", logging.INFO)
+        return generated_cogs
+    
     def process_virtual_mosaic(
         self, 
         vrt_path: str, 

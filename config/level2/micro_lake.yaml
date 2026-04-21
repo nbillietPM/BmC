@@ -1,0 +1,54 @@
+cube_dir: "./test_outputs_2/"
+cube_name: "micro_lake"
+
+keep_raw: false
+
+# ======================================================================
+# 1. SPATIAL: TIGHT BOUNDING BOX FOR SPEED
+# ======================================================================
+spatial:
+  target_grid: "EEA"
+  target_resolution: "100m"
+  use_bbox: true  
+  bbox:
+    long_min: 5.6   # Tightly cropped around Maasmechelen
+    long_max: 5.8
+    lat_min: 50.9
+    lat_max: 51.1
+
+resampling:
+  # Test the multiple-statistics loop on the continuous data
+  continuous: ["average", "max", "min", "rms"] 
+  
+  # Test the categorical-to-continuous fractional conversion engine
+  discrete: "coverage"         
+
+temporal:
+  # Lock to a single year to keep the queue small
+  start_year: 2018
+  start_month: 1
+  end_year: 2020
+  end_month: 12
+
+# ======================================================================
+# 2. DATA SOURCES: ONE CONTINUOUS, ONE CATEGORICAL
+# ======================================================================
+sources:
+  wekeo:
+    enabled: true
+    query_resolution: "highest" 
+    
+    datasets:
+      GRA:
+        include: true
+        productTypes:
+          - "Grassland"
+
+      # --- Continuous Test ---
+      # Tree Cover Density: 10m resolution. The pipeline should calculate
+      # the Average and the Maximum density for every 100m block.
+      TCF: 
+        include: true
+        productTypes:
+          - "Tree Cover Density"
+          - "Forest Type"
