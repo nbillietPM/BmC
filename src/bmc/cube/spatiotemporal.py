@@ -16,9 +16,94 @@ import yaml
 import sys
 import os
 import shutil
-
+import zipfile
+from pathlib import Path
+import os
+import numpy as np
+import xarray as xr
+import rioxarray
+from pathlib import Path
+import gc
 
 class spatiotemporal_cube():
+    """
+    Base class for constructing multidimensional ecological data lakes/cubes.
+
+    This class provides the fundamental spatial physics, directory generation, 
+    logging, and core GDAL/xarray processing engines required to build 
+    spatiotemporal data cubes. It handles the ingestion, out-of-core warping, 
+    and N-dimensional alignment of raw raster data (e.g., WEkEO, CHELSA) 
+    to rigidly defined master grids.
+
+    Attributes
+    ----------
+    GRID_REGISTRY : dict
+        A master registry of supported coordinate reference systems (CRS) and 
+        their exact spatial boundaries. Used to ensure flawless mathematical 
+        alignment across disparate datasets.
+    _GDAL_RESAMPLERS : dict
+        Internal mapping of human-readable resampler string keys to their 
+        corresponding GDAL C++ integer constants.
+    _RESAMPLER_DECODER : dict
+        Internal reverse-mapping of GDAL integer constants back to human-readable 
+        resampler strings, utilized primarily for clear execution logging.
+
+    Methods
+    -------
+    generate_cube_recipe(config_path, logger=None)
+        Parses a YAML configuration file and generates a standardized execution recipe.
+    resolve_grid_registry_key(target_grid, target_resolution, logger=None)
+        Dynamically constructs and validates the master grid key from user configuration.
+    gather_tifs_from_zips(source_directory, target_directory, logger=None)
+        Iterates through zip archives and extracts .tif files into a flattened directory.
+    cleanup_raw_storage(recipe, logger=None)
+        Safely purges the raw data directory based on the user configuration.
+    build_virtual_mosaic(input_folder, output_vrt_path, logger=None)
+        Creates a lightweight Virtual Raster (VRT) blueprint from multiple GeoTIFF tiles.
+    process_virtual_mosaic(vrt_path, strategy, grid_name, output_dir_or_file, logger=None, **kwargs)
+        Routes a VRT blueprint to either standard reprojection or categorical fractional coverage.
+    affine_reproject(input_data, output_filepath, grid_name, resample_keyword='bilinear', compress_mode='lzw', memory_limit_bytes=4096, logger=None)
+        Performs out-of-core spatial reprojection and snapping to a strictly defined master grid.
+    calculate_fractional_coverages(ds, grid_name, output_dir, class_values=None, class_mapping=None, file_prefix='fractional', logger=None)
+        Calculates fractional coverage of categorical classes and exports single-band COGs.
+    export_to_cog(ds, output_filepath, compress_mode='deflate', logger=None)
+        Exports a lazy xarray object to disk as a Cloud Optimized GeoTIFF (COG).
+    da_layer_constructor(data_layer_func, param)
+        General layer constructor that fetches all slices for a layer sequentially.
+    da_layer_constructor_concurrent(layer_func, param, max_workers=4)
+        General layer constructor that fetches all slices for a layer concurrently.
+    da_concat(data_arrays, dim_name, coordinates)
+        Combines a stack of 2D data arrays into a 3D data array along a new dimension.    
+    
+    Notes
+    -----
+    The choice of GDAL resampling algorithm during affine reprojection is critical 
+    for spatial accuracy. Below is a guide to the supported resamplers and their 
+    optimal ecological use cases:
+
+    Categorical & Discrete Data (e.g., Land Cover, Forest Type):
+    * nearestNeighbour : Assigns the value of the single closest source pixel, 
+      preserving original discrete values without interpolation.
+    * mode : Assigns the most frequently occurring value among contributing pixels. 
+      The mathematical standard for downsampling categorical data.
+
+    Continuous Data Smoothing (e.g., Elevation, Temperature):
+    * bilinear : Distance-weighted average of the 4 closest source pixels.
+    * cubic : Distance-weighted cubic polynomial curve over the 16 nearest pixels.
+    * cubicSpline : 2D B-spline mathematical function over the 16 nearest pixels. 
+      Heavily smooths data and prevents "overshoot" (Runge's phenomenon). The 
+      gold standard for realistic, continuous gradients.
+    * lanczos : Complex windowed sinc function over the 36 nearest source pixels. 
+      Preserves high-frequency details and sharpness.
+
+    Continuous Data Statistical Aggregation (Downsampling):
+    * average : Arithmetic mean of all valid intersecting source pixels.
+    * max / min : Highest or lowest data value within the target footprint.
+    * med : Exact middle value (50th percentile) of contributing pixels.
+    * q1 / q3 : First (25th) or third (75th) quartile of contributing pixels.
+    * sum : Addition of all valid intersecting source pixels.
+    * rms : Root Mean Square (quadratic mean). Emphasizes higher magnitude values.
+    """
     _GDAL_RESAMPLERS = {
     "nearestNeighbour": gdal.GRA_NearestNeighbour,
     "bilinear": gdal.GRA_Bilinear,
@@ -326,7 +411,7 @@ class spatiotemporal_cube():
         This base-class method handles universal data cube setup tasks. It reads the 
         user's YAML file, creates the master output directory structures, and dynamically 
         resolves the spatial mathematical grid. By centralizing this logic, all child 
-        data cubes (e.g., WEkEO, Earth Engine, GBIF) share the exact same spatial and 
+        data cubes (e.g., WEkEO,  GBIF) share the exact same spatial and 
         file-system foundations. It explicitly separates the core engine parameters 
         from the diverse data payload APIs nested under the 'sources' block.
 
@@ -364,7 +449,7 @@ class spatiotemporal_cube():
         else:
             log_execution(logger, f"Attempting to load configuration from: {config_path}", logging.INFO)
 
-        # 1. Load the YAML Configuration with Emergency Crash Logging
+        # Load the YAML Configuration with Emergency Crash Logging
         try:
             with open(config_path, 'r') as file:
                 config = yaml.safe_load(file)
@@ -375,7 +460,6 @@ class spatiotemporal_cube():
             if logger: 
                 log_execution(logger, msg, logging.CRITICAL)
             else:
-                # --- EMERGENCY CRASH LOGGER ---
                 # Spin up a temporary logger in the current directory to permanently record the death
                 crash_log_path = f"{yaml_basename}_CRASH.log"
                 crash_logger = self._setup_pipeline_logger(logger_name=f"{yaml_basename}_crash", log_filepath=crash_log_path)
@@ -388,15 +472,13 @@ class spatiotemporal_cube():
             else:
                 raise FileNotFoundError(msg)
 
-        # 2. Extract and Build Base Directory Structures
+        # Extract and Build Base Directory Structures
         cube_name = config.get("cube_name", "standard_export")
         base_out_dir = os.path.join(".", cube_name) 
         raw_dir = os.path.join(base_out_dir, "raw_downloads")
         
         try:
             os.makedirs(raw_dir, exist_ok=True)
-            
-            # --- INITIALIZE INCREMENTAL SUCCESS LOGGER ---
             if not logger:
                 log_filepath = os.path.join(base_out_dir, f"{yaml_basename}.log")
                 
@@ -409,8 +491,7 @@ class spatiotemporal_cube():
                 unique_logger_name = f"{cube_name}_{counter}" if counter > 1 else cube_name
                 logger = self._setup_pipeline_logger(logger_name=unique_logger_name, log_filepath=log_filepath)
                 self.wekeo_logger = logger 
-                
-            # --- RETROACTIVE SUCCESS LOGGING ---
+
             log_execution(logger, f"Successfully loaded configuration from: {config_path}", logging.INFO)
             log_execution(logger, f"Lake root directory initialized at: {base_out_dir}", logging.INFO)
             log_execution(logger, f"Session log file created at: {log_filepath}", logging.INFO)
@@ -421,7 +502,7 @@ class spatiotemporal_cube():
             else: print(msg)
             raise
 
-        # 3. Resolve Spatial Grid via the Helper Function
+        # Resolve Spatial Grid via the Helper Function
         spatial_config = config.get('spatial', {})
         base_grid = spatial_config.get('target_grid', 'EEA')
         res = spatial_config.get('target_resolution', '100m')
@@ -476,22 +557,18 @@ class spatiotemporal_cube():
         -------
         None
         """
-        import zipfile
-        import shutil
-        from pathlib import Path
-        
-        # 1. Set up the paths
+        # Set up the paths
         source_path = Path(source_directory)
         target_path = Path(target_directory)
         
         # Create the target directory if it doesn't exist yet
         target_path.mkdir(parents=True, exist_ok=True)
 
-        # 2. Find all zip files in the source folder
+        # Find all zip files in the source folder
         zip_files = list(source_path.glob("*.zip"))
         log_execution(logger, f"Found {len(zip_files)} zip files. Starting extraction...", logging.INFO)
 
-        # 3. Iterate over each zip file
+        # Iterate over each zip file
         for zip_file_path in zip_files:
             try:
                 with zipfile.ZipFile(zip_file_path, 'r') as zip_ref:
@@ -506,7 +583,7 @@ class spatiotemporal_cube():
                             tif_filename = Path(file_info.filename).name 
                             destination_file = target_path / tif_filename
                             
-                            # 4. Copy the .tif file to the shared folder
+                            # Copy the .tif file to the shared folder
                             with zip_ref.open(file_info) as source_file:
                                 with open(destination_file, 'wb') as target_file:
                                     shutil.copyfileobj(source_file, target_file)
@@ -551,6 +628,7 @@ class spatiotemporal_cube():
             if logger:
                 logger.info(f"keep_raw is False. Purging raw data directory: {raw_dir}")
             try:
+                # Delete an entire directory tree; path must point to a directory (but not a symbolic link to a directory). 
                 shutil.rmtree(raw_dir, ignore_errors=True)
                 if logger:
                     logger.info("Raw data successfully deleted.")
@@ -931,14 +1009,57 @@ class spatiotemporal_cube():
         """
         Calculates the fractional coverage of categorical classes snapped to a target grid,
         exporting each specific class as an independent Single-Band Cloud Optimized GeoTIFF.
-        """
-        import os
-        import numpy as np
-        import xarray as xr
-        import rioxarray
-        from pathlib import Path
-        import gc
 
+        This method takes a categorical raster (e.g., Land Cover) and processes it class 
+        by class. For each requested class, it isolates the pixels by generating a binary 
+        mask (1 for presence, 0 for absence, NaN for NoData). It then routes this mask 
+        through the `affine_reproject` engine using the 'average' resampling algorithm 
+        to calculate the precise continuous fraction (0.0 to 1.0) of that class within 
+        the new, resampled target cell footprint.
+
+        To prevent Out-Of-Memory (OOM) crashes during large regional processing, this 
+        method incorporates aggressive cyclic garbage collection and safe disk-handoffs 
+        for temporary arrays.
+
+        Parameters
+        ----------
+        ds : xarray.DataArray, xarray.Dataset, or str
+            The categorical spatial data to be processed. Can be a pre-loaded lazy 
+            xarray object or a physical file path string pointing to a raster on disk.
+        grid_name : str
+            The key of the master grid (e.g., "EEA_100m") defined in the class registry 
+            to which the fractional data will be strictly aligned and snapped.
+        output_dir : str
+            The destination directory where the generated fractional COGs and 
+            temporary processing files will be stored.
+        class_values : list of int, optional
+            A specific list of integer class values to process. If None, the method 
+            will read the raster blocks to dynamically discover all unique pixel 
+            values present in the dataset.
+        class_mapping : dict, optional
+            A dictionary mapping integer class values to human-readable string names 
+            (e.g., {1: 'Broadleaved_Forest'}). Used to generate clean, readable 
+            filenames. If None, the integer will be used (e.g., 'class_1').
+        file_prefix : str, optional
+            The base string prefixed to every generated output file. 
+            Default is "fractional".
+        logger : logging.Logger, optional
+            The logger instance used to record execution phases, memory cleanup, 
+            and non-fatal file-lock warnings. Default is None.
+
+        Returns
+        -------
+        list of str
+            A list containing the file paths to all successfully generated, 
+            single-band Cloud Optimized GeoTIFFs (COGs).
+
+        Raises
+        ------
+        Exception
+            If the underlying GDAL Warp operation encounters a fatal failure 
+            or if hard drive write permissions are denied, the error is logged 
+            and re-raised to halt the pipeline.
+        """
         os.makedirs(output_dir, exist_ok=True)
         
         if isinstance(ds, (str, Path)):
@@ -973,7 +1094,7 @@ class spatiotemporal_cube():
                 
             log_execution(logger, f"\n--- Processing Class: {cls_int} ({cls_name}) ---", logging.INFO)
             
-            # 1. Create the Lazy Mask
+            # Create the Lazy Mask
             mask = (da == cls).astype(np.float32)
 
             if nodata_val is not None:
@@ -983,17 +1104,17 @@ class spatiotemporal_cube():
             mask.rio.write_transform(da.rio.transform(), inplace=True)
             mask.rio.write_nodata(np.nan, inplace=True)
             
-            # 2. The Disk Handoff
+            # The Disk Handoff
             raw_mask_path = os.path.join(output_dir, f"temp_raw_mask_{cls_int}.tif")
             temp_warp_path = os.path.join(output_dir, f"temp_warp_{cls_int}.tif") 
             
             log_execution(logger, "Streaming binary mask to disk...", logging.INFO)
             mask.rio.to_raster(raw_mask_path, tiled=True, windowed=True)
             
-            # 3. GDAL Warp to temporary file
+            # GDAL Warp to temporary file
             log_execution(logger, "Executing GDAL C++ Warp...", logging.INFO)
             
-            # --- FIX 1: Save the raw dataset to a dedicated variable ---
+            # Save the raw dataset to a dedicated variable
             raw_frac_da = self.affine_reproject(
                 input_data=raw_mask_path, 
                 output_filepath=temp_warp_path, 
@@ -1006,15 +1127,15 @@ class spatiotemporal_cube():
             frac_da = raw_frac_da.squeeze().drop_vars("band", errors="ignore")
             frac_da.name = f"fraction_{cls_name}"
             
-            # 4. Bake the final Cloud Optimized GeoTIFF 
+            # Bake the final Cloud Optimized GeoTIFF 
             final_cog_name = f"{file_prefix}_{cls_name}.tif"
             final_cog_path = os.path.join(output_dir, final_cog_name)
             
             self.export_to_cog(frac_da, final_cog_path, logger=logger)
             generated_cogs.append(final_cog_path)
             
-            # 5. Clean up RAM and Disk Locks
-            raw_frac_da.close() # --- FIX 2: Explicitly close the ORIGINAL file handle ---
+            # Clean up RAM and Disk Locks
+            raw_frac_da.close()
             frac_da.close()     
             del raw_frac_da
             del frac_da
@@ -1022,7 +1143,6 @@ class spatiotemporal_cube():
             # Force the garbage collector to run BEFORE we try to delete files
             gc.collect()
             
-            # --- FIX 3: Defensive File Cleanup ---
             if os.path.exists(raw_mask_path):
                 try:
                     os.remove(raw_mask_path)

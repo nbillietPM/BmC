@@ -16,13 +16,51 @@ import rioxarray
 
 class wekeo_cube(spatiotemporal_cube):
     """
-    Dataset identifiers associated with desired wekeo datasets in the event that future 
-    additions are made to this, assure that its change does not interfere with the working
-    of the other functions
-        - regenerate data inventory
-        - check if generate_query works for the producttypes
-        - if categorical be sure to append the class values to the CATEGORICAL_CLASSES attr
+    Child class dedicated to the ingestion and processing of WEkEO (Copernicus DIAS) ecological data.
+
+    Inherits from `spatiotemporal_cube`. This class acts as the WEkEO-specific engine, 
+    translating abstract configuration recipes into highly specific Harmonised Data 
+    Access (HDA) API queries. It manages the downloading, unzipping, categorical 
+    translation, spatial processing, and rigorous QA validation of high-resolution 
+    layers like Corine Land Cover, High Resolution Layers (HRL), and crop masks.
+
+    Attributes
+    ----------
+    DATASET_MAP : dict
+        A registry mapping shorthand dataset codes (e.g., "TCF", "CORINE") to their 
+        official WEkEO HDA dataset identifiers (e.g., "EO:EEA:DAT:HRL:TCF").
+    CATEGORICAL_CLASSES : dict
+        The master translation dictionary mapping numerical pixel values from discrete 
+        raster products (like "Forest Type" or "Corine Land Cover 2018") into 
+        human-readable class names.
+    wekeo_logger : logging.Logger or None
+        The active logger instance dedicated to the WEkEO execution pipeline.
+
+    Methods
+    -------
+    get_class_label(product_type, pixel_value)
+        Translates numerical pixel values from categorical layers into human-readable class names.
+    intersect_config_with_dataframe(recipe, wekeo_client, api_schema, inventory_filename='wekeo_data_inventory.csv', logger=None)
+        Generates an execution queue of valid WEkEO API queries by intersecting the user config with a dataset inventory.
+    validate_datalake(base_dir, tolerance=0.0001, logger=None)
+        Performs strict mathematical and ecological QA validations on all generated Data Lake datasets.
+    build_wekeo_datalake(recipe, wekeo_client, inventory_filename='wekeo_data_inventory.csv', logger=None)
+        The main pipeline wrapper: downloads data, aligns to grid, calculates derivatives, and exports COGs.
+
+    Notes
+    -----
+    When adding new categorical datasets to the WEkEO pipeline, you must update 
+    the `CATEGORICAL_CLASSES` dictionary to ensure downstream processes (like 
+    fractional coverage calculations) can properly split and name the resulting 
+    single-band TIFFs. 
+    
+    The QA Engine (`validate_datalake`) enforces cross-layer ecological physics. 
+    For example, it guarantees that fractional subsets (like "Broadleaved Forest" 
+    and "Coniferous Forest") never sum to greater than 100%, and verifies they 
+    do not mathematically conflict with continuous baseline layers (like 
+    "Tree Cover Density").
     """
+    
     DATASET_MAP = {
         "TCF": "EO:EEA:DAT:HRL:TCF",
         "GRA": "EO:EEA:DAT:HRL:GRA",
