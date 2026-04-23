@@ -1,4 +1,5 @@
 data/
+scripts/dev_notebooks/
 *~
 *.tif
 *.nc
@@ -10,9 +11,14 @@ data/
 *.env
 .ipynb_checkpoints/
 __pycache__/
+
+# EXCEPTIONS: Allow CSVs in the meta directory
+!meta/*.csv
 !scripts/prototype/inp/prototypeNames.csv
 !scripts/prototype/img/AOI.png
 !scripts/prototype/out/prototype_cube/prototype_test.nc
+
+# IGNORE R files
 .Rhistory
 .RData
 .Ruserdata
