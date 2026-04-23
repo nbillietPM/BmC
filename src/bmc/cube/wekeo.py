@@ -554,6 +554,7 @@ class wekeo_cube(spatiotemporal_cube):
              allocate exactly 0% to both Broadleaved and Coniferous classes.
         """
         import re
+        from pathlib import Path
 
         base_path = Path(base_dir)
         log_execution(logger, f"\n=== Initiating Global QA Sweep on: {base_path.absolute()} ===", logging.INFO)
@@ -623,9 +624,9 @@ class wekeo_cube(spatiotemporal_cube):
                             over_1 = (da > (1.0 + tolerance)).sum().compute().item()
                             
                             if under_0 == 0 and over_1 == 0:
-                                log_execution(logger, f"    -> {class_name} Bounds [0,1]: ✅", logging.INFO)
+                                log_execution(logger, f"    -> {class_name} Bounds [0,1]: [PASSED]", logging.INFO)
                             else:
-                                log_execution(logger, f"    -> {class_name} Bounds [0,1]: ❌ ({under_0} < 0, {over_1} > 1)", logging.WARNING)
+                                log_execution(logger, f"    -> {class_name} Bounds [0,1]: [FAILED] ({under_0} < 0, {over_1} > 1)", logging.WARNING)
                                 all_passed = False
                         
                         if len(fraction_das) > 1:
@@ -638,9 +639,9 @@ class wekeo_cube(spatiotemporal_cube):
                             over_100 = ((total_coverage > (1.0 + tolerance)) & valid_mask).sum().compute().item()
                             
                             if over_100 == 0:
-                                log_execution(logger, f"    -> Aggregate Sum <= 100%: ✅", logging.INFO)
+                                log_execution(logger, f"    -> Aggregate Sum <= 100%: [PASSED]", logging.INFO)
                             else:
-                                log_execution(logger, f"    -> Aggregate Sum <= 100%: ❌ ({over_100} pixels violated)", logging.WARNING)
+                                log_execution(logger, f"    -> Aggregate Sum <= 100%: [FAILED] ({over_100} pixels violated)", logging.WARNING)
                                 all_passed = False
 
                     # ==========================================
@@ -655,25 +656,25 @@ class wekeo_cube(spatiotemporal_cube):
                         if da_min is not None and da_avg is not None:
                             min_gt_avg = (da_min > (da_avg + tolerance)).sum().compute().item()
                             if min_gt_avg == 0:
-                                log_execution(logger, "    -> Math Check (Min <= Avg): ✅", logging.INFO)
+                                log_execution(logger, "    -> Math Check (Min <= Avg): [PASSED]", logging.INFO)
                             else:
-                                log_execution(logger, f"    -> Math Check (Min <= Avg): ❌ ({min_gt_avg} violations)", logging.WARNING)
+                                log_execution(logger, f"    -> Math Check (Min <= Avg): [FAILED] ({min_gt_avg} violations)", logging.WARNING)
                                 all_passed = False
                         
                         if da_avg is not None and da_rms is not None:
                             avg_gt_rms = (da_avg > (da_rms + tolerance)).sum().compute().item()
                             if avg_gt_rms == 0:
-                                log_execution(logger, "    -> Math Check (Avg <= RMS): ✅", logging.INFO)
+                                log_execution(logger, "    -> Math Check (Avg <= RMS): [PASSED]", logging.INFO)
                             else:
-                                log_execution(logger, f"    -> Math Check (Avg <= RMS): ❌ ({avg_gt_rms} violations)", logging.WARNING)
+                                log_execution(logger, f"    -> Math Check (Avg <= RMS): [FAILED] ({avg_gt_rms} violations)", logging.WARNING)
                                 all_passed = False
 
                         if da_rms is not None and da_max is not None:
                             rms_gt_max = (da_rms > (da_max + tolerance)).sum().compute().item()
                             if rms_gt_max == 0:
-                                log_execution(logger, "    -> Math Check (RMS <= Max): ✅", logging.INFO)
+                                log_execution(logger, "    -> Math Check (RMS <= Max): [PASSED]", logging.INFO)
                             else:
-                                log_execution(logger, f"    -> Math Check (RMS <= Max): ❌ ({rms_gt_max} violations)", logging.WARNING)
+                                log_execution(logger, f"    -> Math Check (RMS <= Max): [FAILED] ({rms_gt_max} violations)", logging.WARNING)
                                 all_passed = False
 
         # ==========================================
@@ -693,9 +694,9 @@ class wekeo_cube(spatiotemporal_cube):
                         
                         impossible_forests = ((total_forest > 0.01) & (tcd_max == 0)).sum().compute().item()
                         if impossible_forests == 0:
-                            log_execution(logger, f"  [TCF] {year} | 0% Max Density -> 0% Forest Fraction: ✅", logging.INFO)
+                            log_execution(logger, f"  [TCF] {year} | 0% Max Density -> 0% Forest Fraction: [PASSED]", logging.INFO)
                         else:
-                            log_execution(logger, f"  [TCF] {year} | 0% Max Density -> 0% Forest Fraction: ❌ ({impossible_forests} violations)", logging.WARNING)
+                            log_execution(logger, f"  [TCF] {year} | 0% Max Density -> 0% Forest Fraction: [FAILED] ({impossible_forests} violations)", logging.WARNING)
                             all_passed = False
 
         if 'IMP' in lake_catalog and 'Imperviousness_Density' in lake_catalog['IMP'] and 'Impervious_Built-up' in lake_catalog['IMP']:
@@ -710,9 +711,9 @@ class wekeo_cube(spatiotemporal_cube):
                         
                         impossible_built = ((total_built > 0.01) & (imp_max == 0)).sum().compute().item()
                         if impossible_built == 0:
-                            log_execution(logger, f"  [IMP] {year} | 0% Max Density -> 0% Built-up Fraction: ✅", logging.INFO)
+                            log_execution(logger, f"  [IMP] {year} | 0% Max Density -> 0% Built-up Fraction: [PASSED]", logging.INFO)
                         else:
-                            log_execution(logger, f"  [IMP] {year} | 0% Max Density -> 0% Built-up Fraction: ❌ ({impossible_built} violations)", logging.WARNING)
+                            log_execution(logger, f"  [IMP] {year} | 0% Max Density -> 0% Built-up Fraction: [FAILED] ({impossible_built} violations)", logging.WARNING)
                             all_passed = False
 
         status_msg = "PASSED" if all_passed else "FAILED (See Warnings)"

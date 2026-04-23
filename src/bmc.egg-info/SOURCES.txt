@@ -10,6 +10,7 @@ src/bmc/cube/bmd.py
 src/bmc/cube/chelsa.py
 src/bmc/cube/gbif.py
 src/bmc/cube/spatiotemporal.py
+src/bmc/cube/temp.py
 src/bmc/cube/wekeo.py
 src/bmc/datasource/__init__.py
 src/bmc/datasource/chelsa/__init__.py
@@ -23,11 +24,14 @@ src/bmc/datasource/gbif/sql.py
 src/bmc/datasource/openeo/indices.py
 src/bmc/datasource/openeo/layer.py
 src/bmc/datasource/openeo/processes.py
-src/bmc/datasource/wekeo/query.py
-src/bmc/datasource/wekeo/utils.py
+src/bmc/datasource/wekeo/interface.py
 src/bmc/utils/credentials.py
 src/bmc/utils/logger.py
+src/bmc/utils/meta.py
+src/bmc/utils/provenance.py
+src/bmc/utils/read_config.py
 src/bmc/utils/stac.py
 src/bmc/utils/visualization.py
 src/bmc/utils/chelsa/__init__.py
 src/bmc/utils/chelsa/extract_param.py
+src/datasource/wekeo/utils.py

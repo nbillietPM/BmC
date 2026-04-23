@@ -1,5 +1,5 @@
-cube_dir: "./test_outputs_2/"
-cube_name: "micro_lake"
+base_dir: "./test_outputs/"
+cube_name: "micro_lake_2"
 
 keep_raw: false
 
@@ -27,7 +27,7 @@ temporal:
   # Lock to a single year to keep the queue small
   start_year: 2018
   start_month: 1
-  end_year: 2020
+  end_year: 2018
   end_month: 12
 
 # ======================================================================

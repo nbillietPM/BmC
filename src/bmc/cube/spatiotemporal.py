@@ -474,7 +474,9 @@ class spatiotemporal_cube():
 
         # Extract and Build Base Directory Structures
         cube_name = config.get("cube_name", "standard_export")
-        base_out_dir = os.path.join(".", cube_name) 
+        user_base_dir = config.get("base_dir", ".") 
+        base_out_dir = os.path.join(user_base_dir, cube_name)
+        
         raw_dir = os.path.join(base_out_dir, "raw_downloads")
         
         try:
