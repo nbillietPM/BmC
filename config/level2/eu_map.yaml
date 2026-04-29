@@ -14,19 +14,14 @@ global_temporal:
 datasets:
   GRA:
     productTypes: ["Grassland"]
-
   IMP:
     productTypes: ["Imperviousness Density"]
-
   TCF:
     productTypes: ["Forest type"]
-
   CRL:
     productTypes: []
-
   SLF:
     productTypes: ["Small Woody Features"]
-
   CORINE:
     include: True
     aggregation_method: "fractional"

@@ -1,0 +1,13 @@
+// Data Lake Ingestion Flow
+digraph {
+	rankdir=LR
+	A [label="Raw WEkEO Zip"]
+	B [label="Extracted TIFs"]
+	C [label="Virtual Mosaic (.vrt)"]
+	D [label="Binary Mask (RAM)"]
+	E [label="Fractional COG (Disk)"]
+	A -> B [label=_fetch_unpack_query]
+	B -> C [label=build_virtual_mosaic]
+	C -> D [label="xarray mask"]
+	D -> E [label=affine_reproject]
+}
