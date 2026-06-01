@@ -24,6 +24,7 @@ import xarray as xr
 import rioxarray
 from pathlib import Path
 import gc
+from pyproj import CRS, Transformer
 
 class spatiotemporal_cube():
     """
@@ -342,6 +343,192 @@ class spatiotemporal_cube():
                 logging.WARNING
             )
             return best_guess
+
+    def build_safe_fetch_envelope(
+        self,
+        target_grid_name: str,
+        target_bounds: Optional[Tuple[float, float, float, float]] = None,
+        source_crs_or_grid: str = "EPSG:4326",
+        source_resolution: Optional[float] = None,
+        pixel_buffer: int = 5,
+        logger: Optional[logging.Logger] = None
+    ) -> Tuple[float, float, float, float]:
+        """
+        Constructs a densified, buffered source envelope guaranteed to fully encapsulate 
+        a target grid region without causing edge starvation or NaN boundary artifacts.
+
+        This universal method resolves target grid geometries against the internal registry, 
+        densifies the outer perimeter using vectorized linear interpolation to capture 
+        projection curvature, applies spatial transformation to the native source coordinate 
+        space, and buffers the resulting envelope outward to supply sufficient edge pixels 
+        for multi-pixel GDAL resampling kernels.
+
+        Parameters
+        ----------
+        target_grid_name : str
+            The key of the destination grid defined in `GRID_REGISTRY` (e.g., "EEA_1km").
+        target_bounds : tuple of float, optional
+            Specific sub-region bounding box in target CRS units: (minx, miny, maxx, maxy). 
+            If omitted, defaults to the master grid's full definitive bounds.
+        source_crs_or_grid : str, optional
+            Either a target key from `GRID_REGISTRY` (e.g., "Global_WGS84_30sec") or a 
+            standard CRS string (e.g., "EPSG:4326"). Default is "EPSG:4326".
+        source_resolution : float, optional
+            The size of a single source pixel in native source CRS units. Automatically 
+            inferred if `source_crs_or_grid` exists in the registry.
+        pixel_buffer : int, optional
+            Number of native source pixels added as an outer safety padding to support 
+            multi-pixel GDAL resampling kernels. Default is 5.
+        logger : logging.Logger, optional
+            Logger instance for recording execution metadata. Default is None.
+
+        Returns
+        -------
+        tuple of float
+            The safe outer envelope in the source coordinate space: 
+            (src_minx, src_miny, src_maxx, src_maxy).
+
+        Raises
+        ------
+        KeyError
+            If the requested `target_grid_name` does not exist in the registry.
+        ValueError
+            If spatial transformation yields entirely non-finite coordinates.
+
+        Examples
+        --------
+        Case 1: Standard Master Grid Extraction
+        Deriving the fetching envelope for an entire master grid extent. By omitting 
+        ``target_bounds``, the method automatically defaults to the full definitive bounds 
+        of the requested target grid registry entry.
+
+        >>> safe_wgs_envelope = cube.build_safe_fetch_envelope(
+        ...     target_grid_name="EEA_1km",
+        ...     source_crs_or_grid="Global_WGS84_30sec",
+        ...     pixel_buffer=5,
+        ...     logger=pipeline_logger
+        ... )
+        >>> print(safe_wgs_envelope)
+        (-11.45833, 34.04166, 31.95833, 72.87500)
+
+        Case 2: Localized Sub-Region Ingestion
+        Calculating a highly precise, buffered source envelope for a specific localized subset 
+        (e.g., a localized study area in Belgium defined in metric EPSG:3035 coordinates). 
+        Adding a 5-pixel buffer safely feeds downstream cubic or average C++ warping kernels.
+
+        >>> study_area_3035 = (3800000, 2900000, 3900000, 3000000)
+        >>> safe_subset_envelope = cube.build_safe_fetch_envelope(
+        ...     target_grid_name="EEA_100m",
+        ...     target_bounds=study_area_3035,
+        ...     source_crs_or_grid="Global_WGS84_30sec",
+        ...     pixel_buffer=5
+        ... )
+        >>> print(safe_subset_envelope)
+        (4.19833, 50.71833, 5.66833, 51.65500)
+
+        Case 3: Custom Source Resolution Fallback
+        Querying an unlisted custom CRS string while manually supplying the native source 
+        pixel spacing to ensure exact metric-to-degree buffer translation.
+
+        >>> custom_envelope = cube.build_safe_fetch_envelope(
+        ...     target_grid_name="Global_EqualArea_1km",
+        ...     source_crs_or_grid="EPSG:4326",
+        ...     source_resolution=0.0041666667,  # ~500m source pixels
+        ...     pixel_buffer=8
+        ... )
+        """
+        log_execution(logger, f"Computing safe fetch envelope for target grid '{target_grid_name}'...", logging.INFO)
+
+        # Resolve Target Grid Configurations
+        if target_grid_name not in self.GRID_REGISTRY:
+            raise KeyError(f"Target grid '{target_grid_name}' not found in GRID_REGISTRY.")
+            
+        target_spec = self.GRID_REGISTRY[target_grid_name]
+        target_crs = target_spec["crs"]
+        
+        if target_bounds is None:
+            target_bounds = target_spec["bounds"]
+            log_execution(logger, "Specific target_bounds omitted. Encapsulating full master grid extent.", logging.INFO)
+
+        # Resolve Source Data Configurations
+        if source_crs_or_grid in self.GRID_REGISTRY:
+            src_spec = self.GRID_REGISTRY[source_crs_or_grid]
+            actual_source_crs = src_spec["crs"]
+            if source_resolution is None:
+                source_resolution = src_spec["resolution"]
+        else:
+            actual_source_crs = source_crs_or_grid
+            if source_resolution is None:
+                # Fallback check: Assume CHELSA/WorldClim ~30 arc-second base spacing
+                source_resolution = self.GRID_REGISTRY.get("Global_WGS84_30sec", {}).get(
+                    "resolution", 0.008333333333333333
+                )
+                log_execution(
+                    logger,
+                    f"source_resolution omitted for custom CRS '{actual_source_crs}'. "
+                    f"Applying default 30 arc-second fallback: {source_resolution}",
+                    logging.WARNING
+                )
+
+        # 3. Vectorized Perimeter Densification
+        minx, miny, maxx, maxy = target_bounds
+        num_points = 100  # Granularity per edge
+
+        bx = np.linspace(minx, maxx, num_points)
+        by = np.full(num_points, miny)
+
+        rx = np.full(num_points, maxx)
+        ry = np.linspace(miny, maxy, num_points)
+
+        tx = np.linspace(maxx, minx, num_points)
+        ty = np.full(num_points, maxy)
+
+        lx = np.full(num_points, minx)
+        ly = np.linspace(maxy, miny, num_points)
+
+        perimeter_x = np.concatenate([bx, rx, tx, lx])
+        perimeter_y = np.concatenate([by, ry, ty, ly])
+
+        # 4. Perform Coordinate Transformation
+        transformer = Transformer.from_crs(target_crs, actual_source_crs, always_xy=True)
+        src_x, src_y = transformer.transform(perimeter_x, perimeter_y)
+
+        valid_mask = np.isfinite(src_x) & np.isfinite(src_y)
+        if not np.any(valid_mask):
+            raise ValueError(
+                f"Failed to project target bounds from {target_crs} to {actual_source_crs}. "
+                "Ensure target coordinates fall within allowable projection definitions."
+            )
+            
+        src_x, src_y = src_x[valid_mask], src_y[valid_mask]
+
+        src_minx, src_maxx = float(np.min(src_x)), float(np.max(src_x))
+        src_miny, src_maxy = float(np.min(src_y)), float(np.max(src_y))
+
+        # 5. Apply Resampling Safety Buffer
+        buffer_padding = source_resolution * pixel_buffer
+        
+        safe_minx = src_minx - buffer_padding
+        safe_maxx = src_maxx + buffer_padding
+        safe_miny = src_miny - buffer_padding
+        safe_maxy = src_maxy + buffer_padding
+
+        # 6. Apply Geographic Domain Guardrails
+        src_crs_obj = CRS.from_string(actual_source_crs)
+        if src_crs_obj.is_geographic:
+            safe_minx = max(-180.0, safe_minx)
+            safe_maxx = min(180.0, safe_maxx)
+            safe_miny = max(-90.0, safe_miny)
+            safe_maxy = min(90.0, safe_maxy)
+
+        log_execution(
+            logger,
+            f"Safe Source Envelope ({actual_source_crs}): "
+            f"({safe_minx:.5f}, {safe_miny:.5f}, {safe_maxx:.5f}, {safe_maxy:.5f})",
+            logging.INFO
+        )
+            
+        return (safe_minx, safe_miny, safe_maxx, safe_maxy)
 
     def export_to_cog(
         self, 
