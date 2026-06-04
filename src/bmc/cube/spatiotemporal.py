@@ -1,32 +1,33 @@
-import xarray as xr
-import numpy as np
+import logging
+from typing import Optional, Union, Dict, Any, List, Tuple
+from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
-from rasterio.warp import transform_bounds
-from rasterio.transform import from_origin
-from rasterio.enums import Resampling
-import os
-import glob
-import rioxarray
-from osgeo import gdal
-import logging
-from typing import Optional, Union, Dict, Any, List
-from bmc.utils.logger import log_execution
+import gc
+
 import yaml
 import sys
 import os
 import shutil
 import zipfile
+import glob
 from pathlib import Path
-import os
+
 import numpy as np
 import xarray as xr
+import pandas as pd
 import rioxarray
-from pathlib import Path
-import gc
+from osgeo import gdal
 from pyproj import CRS, Transformer
+from rasterio.warp import transform_bounds
+from rasterio.transform import from_origin
+from rasterio.enums import Resampling
 
-class spatiotemporal_cube():
+from bmc.utils.spatial import build_envelope_from_file
+from bmc.utils.io import parallel_fetch_rasters
+from bmc.utils.logger import log_execution
+
+class spatiotemporal_cube(ABC):
     """
     Base class for constructing multidimensional ecological data lakes/cubes.
 
@@ -173,6 +174,10 @@ class spatiotemporal_cube():
     
     def __init__(self):
         pass
+
+    #################################
+    # Interface & helper functions  #
+    #################################
 
     def _setup_pipeline_logger(self, logger_name, log_filepath):
         """
@@ -828,58 +833,10 @@ class spatiotemporal_cube():
             if logger:
                 logger.info("keep_raw is True. Retaining raw downloaded data.")
 
-    def da_layer_constructor(self, data_layer_func, param):
-        """
-        General layer constructor that can take any function from the layers submodule and fetch all slices for the layer
-        based on the parameters defined by the param dict
+    #################################
+    # Reprojection & data lake gen  #
+    #################################
 
-        returns (var_name, data_array)
-        """
-        static_param = list(param.values())[1:]
-        data_arrays = []
-        for var in param["var"]:
-            data_arrays.append(data_layer_func(var, *static_param))
-        return data_arrays
-    
-    def da_layer_constructor_concurrent(self, layer_func, param, max_workers=4):
-        """
-        Concurrent layer constructor.
-        
-        CRITICAL: This relies on 'param' dictionary keys being in the EXACT order 
-        expected by 'layer_func'.
-        """
-        
-        # 1. Extract Static Parameters
-        # Slice [1:] to skip 'var' and keep the rest (bbox, year_ranges, etc.)
-        # strict order is preserved here.
-        static_param = list(param.values())[1:]
-        
-        # 2. Build Task Arguments
-        # Create a list of tuples: [(var1, bbox, list_of_years...), (var2, bbox, list_of_years...)]
-        # The 'var' is inserted as the FIRST argument.
-        task_arguments = [ (var, *static_param) for var in param["var"] ]
-
-        # 3. Define Worker
-        def _worker(args):
-            # Unpack the tuple into positional arguments
-            return layer_func(*args)
-
-        # 4. Execute
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # map guarantees results are returned in the same order as 'param["var"]'
-            results = list(executor.map(_worker, task_arguments))
-            
-        return results
-
-    def da_concat(self, data_arrays, dim_name, coordinates):
-        """
-        Combines a stack of data layers into one large data layer where stacking results in a new dimension
-        being created with the name dim_name with associated values coordinates
-        """
-        combined_data_array = xr.concat(data_arrays, dim=dim_name)
-        combined_data_array = combined_data_array.assign_coords({dim_name: coordinates})
-        return combined_data_array
-        
     def _sanitize_spatial_geometry(
         self, 
         ds: Union[xr.DataArray, xr.Dataset], 
@@ -1468,3 +1425,269 @@ class spatiotemporal_cube():
         except Exception as e:
             log_execution(logger, f"Pipeline failure during {strategy}: {e}", logging.ERROR, exc_info=True)
             raise
+    
+    #################################
+    #     General Cube pipeline     #
+    #################################
+
+    @abstractmethod
+    def resolve_target_grid(self, spatial_cfg: Dict[str, Any], logger: logging.Logger) -> str:
+        """
+        Translates user-defined spatial configurations into a validated master grid key.
+
+        This abstract method must interpret the ``spatial_cfg`` block from the YAML 
+        recipe and map it to a physically safe, mathematically supported grid framework 
+        present in the base class's ``GRID_REGISTRY``. Child classes must handle 
+        vendor-specific logic here, such as safely degrading sub-kilometer CHELSA requests 
+        to native 1km atmospheric scales, or allowing high-resolution WEkEO requests to pass.
+
+        Parameters
+        ----------
+        spatial_cfg : dict
+            The 'spatial' configuration dictionary extracted from the execution recipe. 
+            Expected to contain keys such as 'target_grid' and 'target_resolution'.
+        logger : logging.Logger
+            The logger instance used to record validation steps or fallback warnings 
+            if a requested resolution is actively overridden by the child class.
+
+        Returns
+        -------
+        str
+            The validated dictionary key (e.g., 'EEA_1km', 'Global_EqualArea_100m') 
+            required to query the parent class's ``GRID_REGISTRY``.
+        """
+        pass
+
+    @abstractmethod
+    def generate_execution_plan(self, recipe: Dict[str, Any], logger: logging.Logger) -> pd.DataFrame:
+        """
+        Translates the execution recipe into a standardized data fetching queue.
+
+        This method bridges the gap between the user's abstract configuration (e.g., 
+        "Give me temperature for 2000-2010") and the vendor's actual data lake. Child 
+        classes must implement the logic to query their specific catalogs (whether via 
+        a local CSV inventory, directory crawling, or a live STAC API) and filter assets 
+        based on spatial, temporal, and categorical constraints.
+
+        Parameters
+        ----------
+        recipe : dict
+            The fully loaded and parsed YAML configuration recipe dictating the 
+            spatiotemporal bounds and requested variables.
+        logger : logging.Logger
+            The logger instance used to record catalog intersection progress, connection 
+            status (if using STAC), and the final asset queue count.
+
+        Returns
+        -------
+        pd.DataFrame
+            A standardized execution queue. To be compatible with the parent processing 
+            engine, the DataFrame must contain at minimum the following columns:
+            - ``level`` (str): The processing family (e.g., 'daily', 'TCF').
+            - ``variable`` (str): The specific scientific variable (e.g., 'tas', 'Tree Cover Density').
+            - ``vsi_path`` (str): The direct /vsicurl/ or local path to the raw GeoTIFF.
+        """
+        pass
+
+    @abstractmethod
+    def parse_metadata(self, row: pd.Series, da: xr.DataArray) -> Tuple[str, xr.DataArray]:
+        """
+        Extracts dataset-specific metadata and injects it as dimensional coordinates.
+
+        Raw Cloud-Optimized GeoTIFFs downloaded from remote storage are fundamentally 2D 
+        and lack complex contextual metadata. This method expands the 2D spatial array 
+        into a 3D or 4D array by parsing the metadata from the execution plan row (e.g., 
+        extracting a year from a filename, or parsing CMIP6 ensembles) and assigning 
+        those values to a new Z-axis dimension (like 'time' or 'projection').
+
+        Parameters
+        ----------
+        row : pd.Series
+            A single record from the execution plan DataFrame containing the contextual 
+            metadata associated with the fetched array.
+        da : xarray.DataArray
+            The raw, mathematically flattened 2D spatial array returned by the 
+            parallel network fetcher.
+
+        Returns
+        -------
+        tuple
+            A 2-element tuple containing:
+            - ``level`` (str): The processing family grouping string.
+            - ``da`` (xarray.DataArray): The structurally augmented 3D/4D DataArray 
+              ready for Z-axis concatenation.
+        """
+        pass
+
+    @abstractmethod
+    def get_resample_rule(self, variable_name: str) -> str:
+        """
+        Determines the appropriate GDAL spatial resampling algorithm for a variable.
+
+        Different physical and ecological variables require strictly different 
+        mathematical algorithms during affine reprojection. Child classes must map 
+        variable strings to valid GDAL resampling strings to prevent data corruption 
+        (e.g., ensuring categorical land cover classes are never interpolated).
+
+        Parameters
+        ----------
+        variable_name : str
+            The name of the physical variable or product type currently being warped 
+            (e.g., 'pr', 'Corine Land Cover 2018').
+
+        Returns
+        -------
+        str
+            The GDAL resampling string. Valid options include 'nearest', 'bilinear', 
+            'cubic', 'average', 'mode', 'max', 'min', 'med', 'q1', 'q3', 'sum', 'rms'.
+        """
+        pass
+
+    @abstractmethod
+    def apply_multi_index(self, level: str, dataset: xr.Dataset) -> xr.Dataset:
+        """
+        Compiles independent dimensional coordinates into a vendor-specific MultiIndex.
+
+        After the parent engine completes spatial warping and restores basic Z-axis 
+        coordinates, some highly complex datasets (such as multidimensional climate 
+        scenarios) require bundling individual string coordinates into a formalized 
+        Pandas/Xarray MultiIndex. Child classes implement this to finalize the 
+        Dataset structure.
+
+        Parameters
+        ----------
+        level : str
+            The processing family grouping string (e.g., 'climatologies', 'bioclim') 
+            which dictates whether a MultiIndex is necessary.
+        dataset : xarray.Dataset
+            The fully warped, spatially aligned, and basic-coordinate-restored Dataset.
+
+        Returns
+        -------
+        xarray.Dataset
+            The finalized Dataset, optionally containing a `.set_index()` MultiIndex 
+            on the Z-axis (e.g., grouping ensemble, scenario, and time_range).
+        """
+        pass
+
+    def process_cube(
+        self, 
+        recipe: Dict[str, Any], 
+        max_workers: int = 10,
+        logger: Optional[logging.Logger] = None
+    ) -> Dict[str, xr.Dataset]:
+        """The universal single-pass rectangular processing loop."""
+        
+        # Handle configuration structure (from generate_cube_recipe)
+        paths_cfg = recipe.get('paths', {})
+        base_dir = paths_cfg.get('base_dir') or recipe.get('base_dir', './outputs/')
+        
+        if logger is None:
+            log_dir = os.path.join(base_dir, 'logs')
+            os.makedirs(log_dir, exist_ok=True)
+            log_filepath = os.path.join(log_dir, 'spatiotemporal_cube_generation.log')
+            logger = self._setup_pipeline_logger(logger_name="spatiotemporal_cube", log_filepath=log_filepath)
+            self.logger = logger
+
+        log_execution(logger, "\n=== Initiating Out-of-Core Data Cube Generation ===", logging.INFO)
+        
+        # 1. Ask Child to Generate Plan
+        execution_plan = self.generate_execution_plan(recipe, logger)
+        if execution_plan.empty:
+            log_execution(logger, "Terminating pipeline: no candidate asset catalog generated.", logging.WARNING)
+            return {}
+
+        # 2. Resolve Master Grid
+        spatial_cfg = recipe.get('spatial', {})
+        target_grid_key = self.resolve_target_grid(spatial_cfg, logger)
+        grid_info = self.GRID_REGISTRY[target_grid_key]
+        target_crs = grid_info["crs"]
+        
+        # 3. Calculate Rectangular Bounds
+        bbox_cfg = spatial_cfg.get('bbox', {})
+        wgs84_bounds = (
+            min(bbox_cfg.get('long_min', 0), bbox_cfg.get('long_max', 0)),
+            min(bbox_cfg.get('lat_min', 0), bbox_cfg.get('lat_max', 0)),
+            max(bbox_cfg.get('long_min', 0), bbox_cfg.get('long_max', 0)),
+            max(bbox_cfg.get('lat_min', 0), bbox_cfg.get('lat_max', 0))
+        )
+        target_bounds = transform_bounds("EPSG:4326", target_crs, *wgs84_bounds)
+
+        # 4. Fetch the Data
+        sample_file_path = execution_plan.iloc[0]['vsi_path']
+        source_bbox = build_envelope_from_file(
+            target_crs=target_crs,
+            target_bounds=target_bounds,
+            source_file_path=sample_file_path,
+            pixel_buffer=5,
+            logger=logger
+        )
+        
+        target_paths = execution_plan['vsi_path'].unique().tolist()
+        raw_fetched_data = parallel_fetch_rasters(target_paths, source_bbox, max_workers)
+
+        # 5. Ask Child to Inject Metadata
+        level_variable_bins: Dict[str, Dict[str, List[xr.DataArray]]] = {
+            lvl: {} for lvl in execution_plan['level'].unique()
+        }
+        for _, row in execution_plan.iterrows():
+            raw_da = raw_fetched_data.get(row['vsi_path'])
+            if raw_da is not None:
+                level, structured_da = self.parse_metadata(row, raw_da)
+                level_variable_bins[level].setdefault(str(structured_da.name), []).append(structured_da)
+
+        final_cubes: Dict[str, xr.Dataset] = {}
+
+        # 6. Harmonize and Warp
+        for level, variables_dict in level_variable_bins.items():
+            if not variables_dict: continue
+            
+            log_execution(logger, f"Harmonizing and warping level '{level}' cubes in single-pass...", logging.INFO)
+            reprojected_vars = []
+            
+            for var_name, da_list in variables_dict.items():
+                
+                # Z-Stacking
+                base_x, base_y = da_list[0].coords['x'], da_list[0].coords['y']
+                snapped_list = [d.assign_coords(x=base_x, y=base_y) for d in da_list]
+                
+                z_dim = [dim for dim in snapped_list[0].dims if dim not in ['x', 'y']][0]
+                snapped_list.sort(key=lambda da: da.coords[z_dim].values[0])
+                
+                combined_da = xr.concat(snapped_list, dim=z_dim)
+                combined_da.name = var_name
+
+                # GDAL Rules & Metadata Catch
+                rule = self.get_resample_rule(var_name)
+                combined_da = self._sanitize_spatial_geometry(combined_da, default_crs="EPSG:4326", logger=logger)
+                non_spatial_coords = {k: v for k, v in combined_da.coords.items() if k not in ['x', 'y', 'spatial_ref']}
+
+                # Affine Reprojection utilizing your parent method
+                cache_dir = os.path.join(base_dir, "warp_cache", level)
+                os.makedirs(cache_dir, exist_ok=True)
+                out_filepath = os.path.join(cache_dir, f"{var_name}_aligned.tif")
+                
+                warped_da = self.affine_reproject(
+                    input_data=combined_da, 
+                    output_filepath=out_filepath, 
+                    grid_name=target_grid_key, 
+                    resample_keyword=rule, 
+                    logger=logger
+                )
+                
+                # Mathematical Rectangular Clip
+                warped_da = warped_da.rio.clip_box(*target_bounds)
+                
+                # Metadata Release
+                warped_da = warped_da.rename({'band': z_dim})
+                warped_da = warped_da.assign_coords(non_spatial_coords)
+                warped_da.name = var_name
+                
+                reprojected_vars.append(warped_da)
+                
+            # Merge and MultiIndex (using child's rules)
+            level_cube = xr.merge(reprojected_vars, combine_attrs='drop_conflicts', join='outer')
+            final_cubes[level] = self.apply_multi_index(level, level_cube)
+            
+        log_execution(logger, "=== Data Cube Framework Generation Complete ===", logging.INFO)
+        return final_cubes

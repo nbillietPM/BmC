@@ -11,8 +11,6 @@ from typing import Dict, List, Tuple, Optional, Any
 
 from bmc.cube.spatiotemporal import spatiotemporal_cube
 from bmc.utils.logger import log_execution
-from bmc.utils.spatial import build_envelope_from_file
-from bmc.utils.io import parallel_fetch_rasters
 
 
 class chelsa_cube(spatiotemporal_cube):
