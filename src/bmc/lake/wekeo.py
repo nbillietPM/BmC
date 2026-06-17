@@ -124,11 +124,19 @@ class wekeo_lake(spatiotemporal_lake):
         """
         raw_dir = recipe.get("paths", {}).get("raw_dir", "./raw_wekeo")
         base_dir = recipe.get("paths", {}).get("base_dir", "./wekeo_lake")
-        
+        lake_name = recipe.get("lake_name", "defaultWekeoLake")
+
         wekeo_config = recipe.get("sources", {}).get("wekeo", {})
         if not wekeo_config.get("enabled", False):
             log_execution(logger, "WEkEO lake generation is disabled.", logging.INFO)
             return []
+
+        if logger is None:
+            log_dir = os.path.join(base_dir, 'logs')
+            os.makedirs(log_dir, exist_ok=True)
+            log_filepath = os.path.join(log_dir, f'{lake_name}_generation.log')
+            logger = self._setup_pipeline_logger(logger_name=lake_name, log_filepath=log_filepath)
+            self.logger = logger
 
         target_grid_key = recipe.get("spatial", {}).get("target_grid_key", "EEA_100m")
         resampling_config = recipe.get("spatial", {}).get("resampling_strategies", {})
@@ -380,8 +388,7 @@ class wekeo_lake(spatiotemporal_lake):
         """
         Crawls the finalized COGs and writes a STAC-compliant GeoParquet catalog.
         """
-        log_execution(logger, f"Generating cloud-native STAC GeoParquet catalog for lake at: {target_dir}", logging.INFO)
-        
+        log_execution(logger, f"Generating cloud-native STAC GeoParquet catalog for lake at: {target_dir}", logging.INFO)    
         base_path = Path(target_dir)
         catalog_records = []
         
@@ -397,28 +404,39 @@ class wekeo_lake(spatiotemporal_lake):
                 product = parts[base_idx + 2]      # e.g., 'Tree_Cover_Density'
                 aggregation = parts[base_idx + 3]  # e.g., 'average', 'coverage'
             else:
-                if len(parts) < 4: continue
+                if len(parts) < 4: 
+                    continue
                 category, product, aggregation = parts[-4], parts[-3], parts[-2]
             
-            # Parse timestamp
+            # Parse timestamp string from filename layout
             year_match = re.search(r'(19\d{2}|20\d{2})', tif_path.name)
             if year_match:
                 year_str = year_match.group(1)
-                datetime_val = f"{year_str}-01-01T00:00:00Z" # Standard ISO-8601 string format
+                datetime_val = f"{year_str}-01-01T00:00:00Z" 
             else:
                 datetime_val = None
+
+            # Extract the specific layer/class from the filename (e.g., 'Non_grassland')
+            if "100m_" in tif_path.stem:
+                extracted_suffix = tif_path.stem.split("100m_")[-1]
+            else:
+                # Fallback to grabbing everything after the last underscore
+                extracted_suffix = tif_path.stem.split("_")[-1]
+
+            # Prevent redundancy: if the suffix is just the aggregation method (e.g., 'average'),
+            # leave layer_class empty, as it's a continuous variable.
+            layer_class = None if extracted_suffix == aggregation else extracted_suffix
 
             # Inspect the physical file to inherit its exact spatial properties
             try:
                 with rioxarray.open_rasterio(tif_path) as src:
-                    # Extract coordinate reference system EPSG integer code
                     epsg_code = src.rio.crs.to_epsg() if src.rio.crs else None
                     
-                    # Transform raster bounds into WGS84 (EPSG:4326) bounding box coordinates
+                    # Transform raster bounds into WGS84 bounding box coordinates
                     bounds_wgs84 = src.rio.transform_bounds("EPSG:4326")
                     long_min, lat_min, long_max, lat_max = bounds_wgs84
                     
-                    # Generate standard Shapely geometry representing the footprint
+                    # Generate standard Shapely geometry representing the spatial footprint
                     geometry_obj = box(long_min, lat_min, long_max, lat_max)
                     
             except Exception as e:
@@ -426,7 +444,7 @@ class wekeo_lake(spatiotemporal_lake):
                     logger.warning(f"Could not read metadata for footprint extraction on {tif_path.name}: {e}")
                 continue
 
-            # Standard STAC Asset Properties Core Layout Scheme
+            # Append standard STAC Asset metadata dictionary structure
             catalog_records.append({
                 "stac_version": "1.0.0",
                 "type": "Feature",
@@ -438,8 +456,9 @@ class wekeo_lake(spatiotemporal_lake):
                     "collection": category,
                     "variable": product,
                     "aggregation": aggregation,
+                    "layer_class": layer_class,  # Safely added without continuous redundancy
                     "proj:epsg": epsg_code,
-                    "level": category, # Maintained backward compatibility dictionary features
+                    "level": category, 
                     "year": int(year_str) if year_match else None
                 },
                 "assets": {
@@ -454,7 +473,7 @@ class wekeo_lake(spatiotemporal_lake):
             log_execution(logger, "No items found to inventory.", logging.WARNING)
             return ""
 
-        # Unpack properties sub-dictionary to flatten dataframe attributes layout
+        # Flatten the records directly onto the root level for clean GeoParquet columns
         flattened_records = []
         for record in catalog_records:
             flat = {
@@ -466,16 +485,17 @@ class wekeo_lake(spatiotemporal_lake):
                 "href": record["assets"]["data"]["href"],
                 "mime_type": record["assets"]["data"]["type"]
             }
-            # Inject items nested inside properties
+            
+            # REMOVED 'prop_' PREFIX: Keeps columns aligned with direct stac-geoparquet conventions
             for prop_k, prop_v in record["properties"].items():
-                flat[f"prop_{prop_k}"] = prop_v
+                flat[prop_k] = prop_v
                 
             flattened_records.append(flat)
 
-        # Initialize GeoDataFrame wrapper framework using WGS84 spatial tracking index
+        # Wrap as a standard GeoDataFrame
         gdf = gpd.GeoDataFrame(flattened_records, geometry="geometry", crs="EPSG:4326")
         
-        # Export layout
+        # Export the finalized Parquet database file
         catalog_path = os.path.join(target_dir, "wekeo_lake_catalog.parquet")
         gdf.to_parquet(catalog_path, index=False)
         
