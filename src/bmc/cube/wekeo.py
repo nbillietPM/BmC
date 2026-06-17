@@ -1,916 +1,614 @@
-from bmc.cube.spatiotemporal import *
-import yaml
-import os
-import json
-from bmc.utils.logger import log_execution
-from bmc.datasource.wekeo.interface import generate_wekeo_query, get_dataset_variables, build_data_inventory
-from bmc.utils.meta import fetch_meta
-import logging
 import pandas as pd
-from typing import Dict, Any, Optional, List
-import urllib
-from pathlib import Path
-import re
 import xarray as xr
-import rioxarray
+import logging
+from typing import Dict, Any, Tuple, Optional
+import os
+
+from bmc.cube.spatiotemporal import spatiotemporal_cube
+from bmc.utils.logger import log_execution
 
 class wekeo_cube(spatiotemporal_cube):
     """
-    Child class dedicated to the ingestion and processing of WEkEO (Copernicus DIAS) ecological data.
+    Orchestration layer for processing WEkEO (Copernicus Land Monitoring Service) Earth Observation data.
 
-    Inherits from `spatiotemporal_cube`. This class acts as the WEkEO-specific engine, 
-    translating abstract configuration recipes into highly specific Harmonised Data 
-    Access (HDA) API queries. It manages the downloading, unzipping, categorical 
-    translation, spatial processing, and rigorous QA validation of high-resolution 
-    layers like Corine Land Cover, High Resolution Layers (HRL), and crop masks.
+    This class acts as a specialized data cube generator inheriting from `spatiotemporal_cube`. 
+    It bridges the gap between abstract user configurations defined in a YAML recipe and the 
+    physical operations required to fetch, align, and reconstruct multi-dimensional data cubes 
+    from the WEkEO STAC catalog. It introduces a critical metadata "smuggling" technique 
+    to preserve complex categorical attributes through out-of-core GDAL C++ warping processes.
 
     Attributes
     ----------
-    DATASET_MAP : dict
-        A registry mapping shorthand dataset codes (e.g., "TCF", "CORINE") to their 
-        official WEkEO HDA dataset identifiers (e.g., "EO:EEA:DAT:HRL:TCF").
-    CATEGORICAL_CLASSES : dict
-        The master translation dictionary mapping numerical pixel values from discrete 
-        raster products (like "Forest Type" or "Corine Land Cover 2018") into 
-        human-readable class names.
-    wekeo_logger : logging.Logger or None
-        The active logger instance dedicated to the WEkEO execution pipeline.
+    dataset_resolution_strategy : str or None
+        The resolution override strategy (e.g., "highest", "lowest", or a specific metric 
+        like "10m") extracted from the WEkEO YAML configuration during plan generation. 
+        Utilized during grid resolution to dynamically select the correct target grid.
 
     Methods
     -------
-    get_class_label(product_type, pixel_value)
-        Translates numerical pixel values from categorical layers into human-readable class names.
-    intersect_config_with_dataframe(recipe, wekeo_client, api_schema, inventory_filename='wekeo_data_inventory.csv', logger=None)
-        Generates an execution queue of valid WEkEO API queries by intersecting the user config with a dataset inventory.
-    validate_datalake(base_dir, tolerance=0.0001, logger=None)
-        Performs strict mathematical and ecological QA validations on all generated Data Lake datasets.
-    build_wekeo_datalake(recipe, wekeo_client, inventory_filename='wekeo_data_inventory.csv', logger=None)
-        The main pipeline wrapper: downloads data, aligns to grid, calculates derivatives, and exports COGs.
+    generate_execution_plan(recipe, logger, catalog_path_override=None)
+        Intersects YAML spatiotemporal constraints against a GeoParquet STAC catalog 
+        to generate a standardized asset fetching queue.
+    resolve_target_grid(spatial_cfg, logger)
+        Resolves dynamic target resolutions against the global configuration and strictly 
+        validates them against the core engine's grid registry.
+    parse_metadata(row, da)
+        Injects temporal axes, sanitizes redundant spatial dimensions, and structurally encodes 
+        categorical metadata into the variable's string name before GDAL processing.
+    get_resample_rule(variable_name)
+        Decodes the structurally smuggled variable name to determine the mathematically safe 
+        GDAL resampling algorithm.
+    apply_multi_index(level, dataset)
+        Unpacks the smuggled string metadata post-warp and expands the flattened variables 
+        back into a formalized N-dimensional data cube.
 
     Notes
     -----
-    When adding new categorical datasets to the WEkEO pipeline, you must update 
-    the `CATEGORICAL_CLASSES` dictionary to ensure downstream processes (like 
-    fractional coverage calculations) can properly split and name the resulting 
-    single-band TIFFs. 
-    
-    The QA Engine (`validate_datalake`) enforces cross-layer ecological physics. 
-    For example, it guarantees that fractional subsets (like "Broadleaved Forest" 
-    and "Coniferous Forest") never sum to greater than 100%, and verifies they 
-    do not mathematically conflict with continuous baseline layers (like 
-    "Tree Cover Density").
+    The underlying GDAL C++ bindings inherently strip Python `xarray` coordinates during 
+    spatial affine reprojection. To circumvent this, the `wekeo_cube` encodes metadata 
+    (such as `aggregation` and `layer_class`) directly into the `DataArray` name string 
+    using a double-underscore delimiter (`__`) in `parse_metadata`. 
+    This string safely passes through GDAL, and is subsequently split apart by 
+    `apply_multi_index` to restore the correct dimensions.
     """
-    
-    DATASET_MAP = {
-        "TCF": "EO:EEA:DAT:HRL:TCF",
-        "GRA": "EO:EEA:DAT:HRL:GRA",
-        "IMP": "EO:EEA:DAT:HRL:IMP",
-        "SLF": "EO:EEA:DAT:HRL:SLF",
-        "CRL": "EO:EEA:DAT:HRL:CRL", 
-        "CORINE": "EO:EEA:DAT:CORINE"
-    } 
-    # ---------------------------------------------------------
-    # PRIVATE CLASS ATTRIBUTE: CORINE Level 3 Nomenclature
-    # Defined first so it can be referenced in the main dictionary below.
-    # ---------------------------------------------------------
-    _CLC_LEVEL_3 = {
-        # 1. Artificial surfaces
-        111: "Continuous urban fabric", 112: "Discontinuous urban fabric",
-        121: "Industrial or commercial units", 122: "Road and rail networks and associated land",
-        123: "Port areas", 124: "Airports", 131: "Mineral extraction sites",
-        132: "Dump sites", 133: "Construction sites", 141: "Green urban areas",
-        142: "Sport and leisure facilities",
-        
-        # 2. Agricultural areas
-        211: "Non-irrigated arable land", 212: "Permanently irrigated land",
-        213: "Rice fields", 221: "Vineyards", 222: "Fruit trees and berry plantations",
-        223: "Olive groves", 231: "Pastures", 241: "Annual crops associated with permanent crops",
-        242: "Complex cultivation patterns", 243: "Land principally occupied by agriculture",
-        244: "Agro-forestry areas",
-        
-        # 3. Forest and semi natural areas
-        311: "Broad-leaved forest", 312: "Coniferous forest", 313: "Mixed forest",
-        321: "Natural grasslands", 322: "Moors and heathland", 323: "Sclerophyllous vegetation",
-        324: "Transitional woodland-shrub", 331: "Beaches, dunes, sands",
-        332: "Bare rocks", 333: "Sparsely vegetated areas", 334: "Burnt areas",
-        335: "Glaciers and perpetual snow",
-        
-        # 4. Wetlands
-        411: "Inland marshes", 412: "Peat bogs", 421: "Salt marshes",
-        422: "Salines", 423: "Intertidal flats",
-        
-        # 5. Water bodies
-        511: "Water courses", 512: "Water bodies", 521: "Coastal lagoons",
-        522: "Estuaries", 523: "Sea and ocean",
-        
-        # Exceptions
-        48: "Unclassified / Unverifiable", 128: "No data", 255: "Outside area / No data"
-    }
-
-    # ---------------------------------------------------------
-    # PUBLIC CLASS ATTRIBUTE: Master Categorical Dictionary
-    # ---------------------------------------------------------
-    CATEGORICAL_CLASSES = {
-        # --- CRL: Crop Types ---
-        "Crop Types": {
-            0: "No crop / Non-agricultural",
-            1110: "Wheat", 1120: "Barley", 1130: "Maize", 1140: "Rice", 
-            1150: "Other_Cereals", 1210: "Fresh_Vegetables", 1220: "Dry_Pulses", 
-            1310: "Potatoes", 1320: "Sugar_Beet", 1410: "Sunflower", 1420: "Soybeans", 
-            1430: "Rapeseed", 1440: "Flax_Cotton_Hemp", 2100: "Grapes", 2200: "Olives", 
-            2310: "Fruits", 2320: "Nuts", 3100: "Unclassified_Arable", 
-            3200: "Unclassified_Permanent", 254: "Unclassifiable", 255: "No data"
-        },
-        "Secondary Crops Type": {
-            0: "No crop / Non-agricultural",
-            1110: "Wheat", 1120: "Barley", 1130: "Maize", 1140: "Rice", 
-            1150: "Other_Cereals", 1210: "Fresh_Vegetables", 1220: "Dry_Pulses", 
-            1310: "Potatoes", 1320: "Sugar_Beet", 1410: "Sunflower", 1420: "Soybeans", 
-            1430: "Rapeseed", 1440: "Flax_Cotton_Hemp", 2100: "Grapes", 2200: "Olives", 
-            2310: "Fruits", 2320: "Nuts", 3100: "Unclassified_Arable", 
-            3200: "Unclassified_Permanent", 254: "Unclassifiable", 255: "No data"
-        },
-
-        # --- CORINE Land Cover (Referencing the private dictionary) ---
-        "Corine Land Cover 1990": _CLC_LEVEL_3,
-        "Corine Land Cover 2000": _CLC_LEVEL_3,
-        "Corine Land Cover 2006": _CLC_LEVEL_3,
-        "Corine Land Cover 2012": _CLC_LEVEL_3,
-        "Corine Land Cover 2018": _CLC_LEVEL_3,
-
-        # --- TCF: Tree Cover & Forest Products ---
-        "Forest Type": {
-            0: "Non-forest areas", 1: "Broadleaved forest", 2: "Coniferous forest",
-            254: "Unclassifiable", 255: "No data"
-        },
-        "Dominant Leaf Type": {
-            0: "All non-tree areas", 1: "Broadleaved", 2: "Coniferous",
-            254: "Unclassifiable", 255: "No data"
-        },
-
-        # --- IMP: Imperviousness Built-up ---
-        "Impervious Built-up": {
-            0: "Non-built-up area", 1: "Built-up area", 
-            254: "Unclassifiable", 255: "No data"
-        },
-
-        # --- Binary Mask Products (SLF, GRA, CRL, etc.) ---
-        "Grassland": {0: "Non-grassland", 1: "Grassland", 254: "Unclassifiable", 255: "No data"},
-        "Ploughing Indicator": {0: "No ploughing detected", 1: "Ploughing detected", 254: "Unclassifiable", 255: "No data"},
-        "Forest Mask": {0: "Non-forest", 1: "Forest", 254: "Unclassifiable", 255: "No data"},
-        "Crop Mask": {0: "Non-crop", 1: "Crop", 254: "Unclassifiable", 255: "No data"},
-        "Small Woody Features": {0: "Non-SWF", 1: "Small Woody Feature presence", 254: "Unclassifiable", 255: "No data"},
-        "Fallow Land Presence": {0: "No fallow land", 1: "Fallow land present", 254: "Unclassifiable", 255: "No data"}
-    }
-    
     def __init__(self):
         super().__init__()
-        self.wekeo_logger = None
 
-    def _fetch_unpack_query(self, wekeo_query: dict, wekeo_client: object, base_dir: str = "wekeo", logger: Optional[logging.Logger] = None) -> Optional[str]:
-        """
-        Executes a formatted query against the WEkEO Harmonized Data Access (HDA) API, 
-        downloads the compressed results, and unpacks the internal .tif files.
-
-        Parameters
-        ----------
-        wekeo_query : dict
-            The JSON-like dictionary payload containing the specific dataset, product, 
-            spatial, and temporal parameters to be requested from the API.
-        wekeo_client : object
-            An initialized and authenticated instance of the WEkEO HDA client used 
-            to send the search and download requests.
-        base_dir : str, optional
-            The root directory where the downloaded data will be stored. A dataset-specific 
-            subdirectory will be created inside this path. Default is "wekeo".
-        logger : logging.Logger, optional
-            The logger instance to use for recording execution progress, bugs, and API 
-            responses. If None, it defaults to the class's internal `wekeo_logger`.
-
-        Returns
-        -------
-        download_dir : str or None
-            The absolute or relative path to the directory where the unzipped .tif files 
-            have been saved. Returns None if the API responds with an empty result set.
-
-        Notes
-        -----
-        This is a private method meant to be called sequentially during the pipeline's 
-        execution phase. It includes a built-in safety net to catch silent empty responses 
-        from the API (where the API returns 200 OK but provides no actual data links).
-
-        See Also
-        --------
-        gather_tifs_from_zips : Utility function called internally to extract the files.
-        """
-        if not logger:
-            logger = self.wekeo_logger
-        # Extract the id from the query
-        dataset_id = wekeo_query.get("dataset_id", "UNKNOWN_DATASET")
-        log_execution(logger, f"===={dataset_id}====", logging.INFO)
-    
-        pretty_query = json.dumps(wekeo_query, indent=4)
-        indented_block = "\n    " + pretty_query.replace("\n", "\n    ")
-        log_execution(logger, f"Executing search query...{indented_block}", logging.INFO)
-        # Get all matches from the query
-        response = wekeo_client.search(wekeo_query)
-        
-        # Check if response has results or is fundamentally empty
-        try:
-            is_empty = not response or len(getattr(response, 'results', [])) == 0
-        except Exception:
-            is_empty = False 
-
-        if is_empty:
-            log_execution(logger, f"EMPTY RESULT FROM QUERY", logging.WARNING)
-            return None
-        
-        log_execution(logger, f"Downloading response to {base_dir}...", logging.INFO)
-        response.download(download_dir=base_dir) # Use base_dir directly
-        
-        # Extract the tif files from their zipped folders
-        self.gather_tifs_from_zips(
-            source_directory=base_dir, 
-            target_directory=os.path.join(base_dir, "tif_files"),
-            logger=logger
-        )
-        return base_dir
-
-    def get_class_label(self, product_type: str, pixel_value: int) -> str:
-        """
-        Translates numerical pixel values from categorical raster layers into human-readable 
-        class names using the master classification dictionary.
-
-        Parameters
-        ----------
-        product_type : str
-            The name of the WEkEO product being evaluated (e.g., "Crop Types", 
-            "Corine Land Cover 2018", "Forest Type").
-        pixel_value : int
-            The integer value extracted from the raster pixel.
-
-        Returns
-        -------
-        label : str
-            The human-readable classification of the pixel (e.g., "Broadleaved forest"). 
-            If the product is continuous or the specific value is unmapped, it returns 
-            a fallback string notifying the user.
-
-        Notes
-        -----
-        This method relies on the `CATEGORICAL_CLASSES` class attribute being properly 
-        defined. It is primarily used downstream when interpreting model outputs or 
-        summarizing spatial layers.
-        """
-        if product_type in self.CATEGORICAL_CLASSES:
-            product_dict = self.CATEGORICAL_CLASSES[product_type]
-            return product_dict.get(pixel_value, f"Unknown Value: {pixel_value}")
-        else:
-            return f"Product '{product_type}' is continuous or not defined."
-
-    def _validate_config_products(
-            self,
-            recipe: Dict[str, Any], 
-            inventory_df: pd.DataFrame, 
-            logger: Optional[logging.Logger] = None
-            ) -> bool:
-        """
-        Validates user-requested WEkEO product types against the ground-truth API inventory.
-
-        This internal method acts as a pre-execution safeguard. It ensures that the 
-        products requested in the YAML configuration actually exist in the compiled 
-        metadata inventory before the pipeline attempts to query the API. It also 
-        validates specific resolution overrides, issuing a warning if an exact 
-        resolution match is unavailable.
-
-        Parameters
-        ----------
-        recipe : dict
-            A dictionary containing the parsed execution recipe. Expected to contain 
-            nested configuration under `['sources']['wekeo']`.
-        inventory_df : pandas.DataFrame
-            The ground-truth API inventory loaded as a DataFrame. Must contain at least 
-            the columns 'productType' and 'resolution'.
-        logger : logging.Logger, optional
-            The logger instance used to record validation steps, warnings for missing 
-            resolutions, and errors for missing products. Default is None.
-
-        Returns
-        -------
-        bool
-            True if all requested products are found in the inventory, or if the WEkEO 
-            pipeline is explicitly disabled. False if one or more requested products 
-            are completely missing from the inventory. 
-            
-            Note: Invalid resolution targets only generate a warning to the logger and 
-            do not cause the function to return False, as the resolver will fallback 
-            to the best available option.
-        """
-        is_valid = True
-        # Retrieve requested wekeo section
-        wekeo_config = recipe.get('sources', {}).get('wekeo', {})
-        
-        if not wekeo_config.get('enabled', False):
-            log_execution(logger, "WEkEO pipeline is disabled in recipe. Skipping validation.", logging.INFO)
-            return True
-        
-        datasets_config = wekeo_config.get('datasets', {})
-        # Generate list of products that can be requested
-        available_products = set(inventory_df['productType'].dropna().unique())
-        
-        for category, cat_config in datasets_config.items():
-            if not cat_config or not cat_config.get('include', False):
-                continue
-                
-            requested_products = cat_config.get('productTypes', [])
-            
-            for product in requested_products:
-                if product not in available_products:
-                    log_execution(logger, f"Mismatch in [{category}]: Product '{product}' not in inventory.", logging.WARNING)
-                    is_valid = False
-                else:
-                    # New: Check if the specific resolution override exists (if provided)
-                    target_res = cat_config.get('query_resolution')
-                    if target_res and target_res not in ['highest', 'lowest']:
-                        prod_res = inventory_df[inventory_df['productType'] == product]['resolution'].unique()
-                        if target_res not in prod_res:
-                            log_execution(logger, f"Warning: Specific resolution '{target_res}' for '{product}' not in inventory. Resolver will pick best available.", logging.WARNING)          
-        return is_valid
-
-    def intersect_config_with_dataframe(
-            self,
-            recipe: Dict[str, Any],
-            wekeo_client: Any,
-            api_schema: dict,
-            inventory_filename: str = "wekeo_data_inventory.csv",
-            logger: Optional[logging.Logger] = None
-        ) -> List[Dict[str, Any]]:
-            """
-            Generates an execution queue of valid WEkEO API queries by intersecting 
-            the user configuration with a verified ground-truth dataset inventory.
-
-            This method attempts to load a pre-compiled dataset inventory from the 
-            bundled `meta/` directory. If the file is missing, it automatically falls 
-            back to dynamically crawling the WEkEO API to reconstruct it. Once the 
-            inventory is loaded, it checks if requested datasets support bounding box 
-            queries, gracefully degrading to full-extent downloads if they do not.
-
-            Parameters
-            ----------
-            recipe : Dict[str, Any]
-                The parsed YAML configuration dictionary containing the user's spatial, 
-                temporal, and dataset requirements.
-            wekeo_client : Any
-                The initialized WEkEO HDA API client, used to perform the fallback 
-                inventory crawl if the static catalog is missing.
-            api_schema : dict
-                A dictionary containing the categories, products, and available 
-                configurations (extracted via WEkEO constraints) used to build the 
-                fallback inventory.
-            inventory_filename : str, optional
-                The name of the static metadata catalog file to look for in the `meta/` 
-                directory. Default is 'wekeo_data_inventory.csv'.
-            logger : logging.Logger, optional
-                The logger instance used to record execution status and warnings. 
-                Default is None.
-
-            Returns
-            -------
-            List[Dict[str, Any]]
-                A list of dictionary payloads formatted as valid WEkEO HDA queries, 
-                ready to be passed to the API downloader.
-
-            Raises
-            ------
-            ValueError
-                If the requested configuration products cannot be validated against 
-                the ground-truth inventory.
-            """
-            # Try fetching static meta, fallback to dynamic build
-            try:
-                df = fetch_meta(inventory_filename, logger=logger)
-                log_execution(logger, f"Successfully loaded pre-compiled inventory: '{inventory_filename}'", logging.INFO)
-                
-            except FileNotFoundError:
-                log_execution(logger, f"Inventory '{inventory_filename}' not found in meta directory. Constructing dynamically...", logging.WARNING)
-                
-                # Resolve the path to the meta directory so the new file is saved properly
-                base_dir = Path(__file__).resolve().parents[3]
-                target_path = base_dir / 'meta' / inventory_filename
-                
-                df = build_data_inventory(
-                    api_schema=api_schema,
-                    dataset_map=self.DATASET_MAP,
-                    wekeo_client=wekeo_client,
-                    output_filepath=str(target_path),
-                    logger=logger
-                )
-
-            # Validate user config against the resulting DataFrame
-            if not self._validate_config_products(recipe, df, logger):
-                raise ValueError("Recipe validation failed. Check inventory logs.")
-            
-            wekeo_config = recipe.get('sources', {}).get('wekeo', {})
-            global_q_res = wekeo_config.get('query_resolution', 'highest') 
-            
-            # Extract Global Constraints
-            temp_cfg = recipe.get('temporal', {})
-            start_year, end_year = temp_cfg.get('start_year'), temp_cfg.get('end_year')
-            temporal_df = df[(df['year'] >= start_year) & (df['year'] <= end_year)]
-
-            # Extract Target Bounding Box
-            user_bbox = None
-            raw_spatial = recipe.get('raw_config', {}).get('spatial', {})
-            use_bbox = raw_spatial.get('use_bbox', False)
-            
-            if use_bbox:
-                bbox_dict = recipe.get('spatial', {}).get('bbox')
-                if bbox_dict:
-                    user_bbox = [
-                        bbox_dict['long_min'], 
-                        bbox_dict['lat_min'], 
-                        bbox_dict['long_max'], 
-                        bbox_dict['lat_max']
-                    ]
-                else:
-                    log_execution(logger, "Warning: 'use_bbox' is True, but no coordinates were found.", logging.WARNING)
-                
-            execution_queue = []
-            datasets_config = wekeo_config.get('datasets', {})
-            
-            # 3. Build the specific execution queue
-            for category, cat_config in datasets_config.items():
-                if not cat_config or not cat_config.get('include', False): 
-                    continue
-                    
-                # Logic for Format-based layers (CORINE)
-                if 'format' in cat_config:
-                    target_format = cat_config.get('format')
-                    strict_df = temporal_df[(temporal_df['category'] == category) & 
-                                            (temporal_df['format'] == target_format)]
-                    
-                    for _, row in strict_df.iterrows():
-                        supports_bbox = bool(row['bbox'])
-                        query_bbox = user_bbox if supports_bbox else None
-                        
-                        if user_bbox and not supports_bbox:
-                            log_execution(logger, f"Note: API BBOX not supported for '{row['productType']}'. Will download full extent.", logging.INFO)
-
-                        execution_queue.append(generate_wekeo_query(
-                            dataset_id=row['dataset_id'], 
-                            product_type=row['productType'],
-                            data_format=target_format, 
-                            bbox=query_bbox
-                        ))
-                        log_execution(logger, f"Queued: {row['productType']} ({row['year']}) at {target_format}", logging.INFO)
-
-                # Logic for Resolution-based layers (HRL, etc.)
-                elif 'productTypes' in cat_config:
-                    strategy = cat_config.get('query_resolution', global_q_res)
-                    
-                    for product in cat_config['productTypes']:
-                        product_df = temporal_df[temporal_df['productType'] == product]
-                        
-                        if product_df.empty:
-                            log_execution(logger, f"Skipped '{product}': No data found for specified years.", logging.WARNING)
-                            continue
-                            
-                        # Resolve raw resolution to query
-                        available_res = product_df['resolution'].unique()
-                        resolved_res = self._resolve_query_resolution(strategy, available_res, logger)
-                        
-                        final_df = product_df[product_df['resolution'] == resolved_res]
-                        
-                        for year in sorted(final_df['year'].unique()):
-                            row = final_df[final_df['year'] == year].iloc[0]
-                            
-                            supports_bbox = bool(row['bbox'])
-                            query_bbox = user_bbox if supports_bbox else None
-                            
-                            if user_bbox and not supports_bbox:
-                                log_execution(logger, f"Note: API BBOX not supported for '{product}' ({year}). Will download full extent.", logging.INFO)
-
-                            execution_queue.append(generate_wekeo_query(
-                                dataset_id=row['dataset_id'], 
-                                product_type=product,
-                                year=str(year), 
-                                resolution=resolved_res, 
-                                bbox=query_bbox
-                            ))
-                            log_execution(logger, f"Queued: {product} ({year}) at {resolved_res}", logging.INFO)
-                      
-            return execution_queue
-    
-    def validate_datalake(
-        self, 
-        base_dir: str, 
-        tolerance: float = 0.0001, 
-        logger: Optional[logging.Logger] = None
-    ) -> bool:
-        """
-        Dynamically crawls a structured data lake and performs strict mathematical 
-        and ecological QA validations on all detected continuous and categorical datasets.
-
-        This function acts as the final gatekeeper in the data pipeline, ensuring that 
-        the spatial resampling and aggregations (performed by GDAL) did not introduce 
-        mathematical artifacts, NoData poisoning, or physical impossibilities.
-
-        Parameters
-        ----------
-        base_dir : str
-            The root directory of the generated data lake to be validated.
-        tolerance : float, optional
-            The acceptable floating-point tolerance for mathematical comparisons. 
-            GDAL aggregations often introduce microscopic drift (e.g., summing to 1.0000001). 
-            Default is 0.0001.
-        logger : logging.Logger, optional
-            The logger instance used to record validation progress and flag violations. 
-            Default is None.
-
-        Returns
-        -------
-        bool
-            True if all QA tests pass with zero violations. False if any pixels 
-            violate the mathematical or ecological rules.
-
-        Notes
-        -----
-        The validation engine performs three primary categories of tests:
-
-        1. Categorical Fractional Boundaries & Sums:
-           - Bounds Check: Ensures all fractional pixels are bounded strictly between 0.0 and 1.0.
-           - Mutually Exclusive Summation: Sums all classes within a single product 
-             (e.g., Broadleaved + Coniferous) and verifies they do not exceed 100%. 
-             This prevents spatial double-counting.
-
-        2. Continuous Mathematical Inequalities:
-           - Validates the statistical logic of the GDAL warp engine by ensuring the 
-             aggregated pixels obey variance mathematics: Min <= Average <= RMS <= Max.
-
-        3. Cross-Layer Ecological Logic:
-           - Validates physical reality across completely different datasets. 
-           - Example: If the continuous "Tree Cover Density" layer states the Maximum 
-             density for a 100m pixel is 0%, the fractional "Forest Type" layer must 
-             allocate exactly 0% to both Broadleaved and Coniferous classes.
-        """
-        import re
-        from pathlib import Path
-
-        base_path = Path(base_dir)
-        log_execution(logger, f"\n=== Initiating Global QA Sweep on: {base_path.absolute()} ===", logging.INFO)
-        
-        if not base_path.exists():
-            log_execution(logger, f"[!] Target directory does not exist: {base_dir}", logging.ERROR)
-            return False
-
-        all_passed = True
-
-        # Discover and Group Data by Product and Year
-        lake_catalog = {}
-        """
-        glob (short for "global") refers to the process of using wildcard characters to find specific files 
-        or directories based on patterns, rather than typing out exact filenames. rglob (short for recursive glob) 
-        lies in how deep they look into your folders. While both are used to find files matching a pattern, they 
-        differ in their "scope" of vision. rglob (Recursive): It is deep. It automatically searches the current directory 
-        and every single sub-directory beneath it, no matter how many levels down they go.
-        """
-        for tif_path in base_path.rglob("*.tif"):
-            # Separate the path into the different hierarchical levels
-            parts = tif_path.parts
-            # General structure is 'lake_name/dataset_id/productType/aggregation/*tif'
-            if len(parts) < 4: continue
-            
-            category, product, aggregation = parts[-4], parts[-3], parts[-2]
-            
-            # Regular expression match to fit anything 19XX or 20XX where X can be any digit
-            year_match = re.search(r'(19\d{2}|20\d{2})', tif_path.name)
-            year = int(year_match.group(1)) if year_match else "AllYears"
-            
-            if category not in lake_catalog: lake_catalog[category] = {}
-            if product not in lake_catalog[category]: lake_catalog[category][product] = {}
-            if year not in lake_catalog[category][product]: lake_catalog[category][product][year] = {}
-            
-            if aggregation == 'coverage':
-                if 'coverage' not in lake_catalog[category][product][year]:
-                    lake_catalog[category][product][year]['coverage'] = []
-                lake_catalog[category][product][year]['coverage'].append(tif_path)
-            else:
-                lake_catalog[category][product][year][aggregation] = tif_path
-
-        def load_da(path):
-            return rioxarray.open_rasterio(path, masked=True, chunks={'x': 2048, 'y': 2048}).squeeze()
-
-        # Execute Validations
-        # Perform iteration per product to validate all time slices consecutively
-        for category, products in lake_catalog.items():
-            for product, years in products.items():
-                for year, layers in years.items():
-                    log_execution(logger, f"\n--- Validating: {category} | {product} | {year} ---", logging.INFO)
-                    
-                    # ==========================================
-                    # TEST A: Categorical Fractional Boundaries & Sums
-                    # ==========================================
-                    if 'coverage' in layers:
-                        fraction_das = []
-                        for frac_path in layers['coverage']:
-                            da = load_da(frac_path)
-                            # Load in the data array associated with a fraction
-                            fraction_das.append(da)
-                            class_name = frac_path.stem.split(f"{year}_")[-1] 
-                            
-                            # Identify pixels where the value dips below 0 or above 1
-                            # generates binary masks that sum up to the number of pixels that violate the rule
-                            under_0 = (da < -tolerance).sum().compute().item()
-                            over_1 = (da > (1.0 + tolerance)).sum().compute().item()
-                            
-                            if under_0 == 0 and over_1 == 0:
-                                log_execution(logger, f"    -> {class_name} Bounds [0,1]: [PASSED]", logging.INFO)
-                            else:
-                                log_execution(logger, f"    -> {class_name} Bounds [0,1]: [FAILED] ({under_0} < 0, {over_1} > 1)", logging.WARNING)
-                                all_passed = False
-                        
-                        if len(fraction_das) > 1:
-                            # Fill in NaN values with 0 (invalid to sum numbers with a NaN) and sum arrays pixel wise
-                            total_coverage = sum([da.fillna(0) for da in fraction_das])
-                            # Valid mask serves as safety net to differentiate between valid 0's and NaN values and will return a 
-                            # Binary mask that defines regions where there is actual information
-                            valid_mask = sum([da.notnull() for da in fraction_das]) > 0
-                            # Verifies the existence of pixels where the total sum exceeds 100%
-                            over_100 = ((total_coverage > (1.0 + tolerance)) & valid_mask).sum().compute().item()
-                            
-                            if over_100 == 0:
-                                log_execution(logger, f"    -> Aggregate Sum <= 100%: [PASSED]", logging.INFO)
-                            else:
-                                log_execution(logger, f"    -> Aggregate Sum <= 100%: [FAILED] ({over_100} pixels violated)", logging.WARNING)
-                                all_passed = False
-
-                    # ==========================================
-                    # TEST B: Continuous Mathematical Inequalities
-                    # ==========================================
-                    else:
-                        da_min = load_da(layers.get('min')) if 'min' in layers else None
-                        da_avg = load_da(layers.get('average')) if 'average' in layers else None
-                        da_rms = load_da(layers.get('rms')) if 'rms' in layers else None
-                        da_max = load_da(layers.get('max')) if 'max' in layers else None
-                        
-                        if da_min is not None and da_avg is not None:
-                            min_gt_avg = (da_min > (da_avg + tolerance)).sum().compute().item()
-                            if min_gt_avg == 0:
-                                log_execution(logger, "    -> Math Check (Min <= Avg): [PASSED]", logging.INFO)
-                            else:
-                                log_execution(logger, f"    -> Math Check (Min <= Avg): [FAILED] ({min_gt_avg} violations)", logging.WARNING)
-                                all_passed = False
-                        
-                        if da_avg is not None and da_rms is not None:
-                            avg_gt_rms = (da_avg > (da_rms + tolerance)).sum().compute().item()
-                            if avg_gt_rms == 0:
-                                log_execution(logger, "    -> Math Check (Avg <= RMS): [PASSED]", logging.INFO)
-                            else:
-                                log_execution(logger, f"    -> Math Check (Avg <= RMS): [FAILED] ({avg_gt_rms} violations)", logging.WARNING)
-                                all_passed = False
-
-                        if da_rms is not None and da_max is not None:
-                            rms_gt_max = (da_rms > (da_max + tolerance)).sum().compute().item()
-                            if rms_gt_max == 0:
-                                log_execution(logger, "    -> Math Check (RMS <= Max): [PASSED]", logging.INFO)
-                            else:
-                                log_execution(logger, f"    -> Math Check (RMS <= Max): [FAILED] ({rms_gt_max} violations)", logging.WARNING)
-                                all_passed = False
-
-        # ==========================================
-        # TEST C: Global Cross-Layer Ecological Logic
-        # ==========================================
-        log_execution(logger, "\n--- Running Cross-Layer Dependencies ---", logging.INFO)
-        
-        if 'TCF' in lake_catalog and 'Tree_Cover_Density' in lake_catalog['TCF'] and 'Forest_Type' in lake_catalog['TCF']:
-            for year in lake_catalog['TCF']['Tree_Cover_Density'].keys():
-                if year in lake_catalog['TCF']['Forest_Type']:
-                    max_tcd_path = lake_catalog['TCF']['Tree_Cover_Density'][year].get('max')
-                    forest_coverages = lake_catalog['TCF']['Forest_Type'][year].get('coverage', [])
-                    
-                    if max_tcd_path and forest_coverages:
-                        tcd_max = load_da(max_tcd_path)
-                        total_forest = sum([load_da(p).fillna(0) for p in forest_coverages])
-                        
-                        impossible_forests = ((total_forest > 0.01) & (tcd_max == 0)).sum().compute().item()
-                        if impossible_forests == 0:
-                            log_execution(logger, f"  [TCF] {year} | 0% Max Density -> 0% Forest Fraction: [PASSED]", logging.INFO)
-                        else:
-                            log_execution(logger, f"  [TCF] {year} | 0% Max Density -> 0% Forest Fraction: [FAILED] ({impossible_forests} violations)", logging.WARNING)
-                            all_passed = False
-
-        if 'IMP' in lake_catalog and 'Imperviousness_Density' in lake_catalog['IMP'] and 'Impervious_Built-up' in lake_catalog['IMP']:
-            for year in lake_catalog['IMP']['Imperviousness_Density'].keys():
-                 if year in lake_catalog['IMP']['Impervious_Built-up']:
-                    max_imp_path = lake_catalog['IMP']['Imperviousness_Density'][year].get('max')
-                    builtup_coverages = lake_catalog['IMP']['Impervious_Built-up'][year].get('coverage', [])
-                    
-                    if max_imp_path and builtup_coverages:
-                        imp_max = load_da(max_imp_path)
-                        total_built = sum([load_da(p).fillna(0) for p in builtup_coverages])
-                        
-                        impossible_built = ((total_built > 0.01) & (imp_max == 0)).sum().compute().item()
-                        if impossible_built == 0:
-                            log_execution(logger, f"  [IMP] {year} | 0% Max Density -> 0% Built-up Fraction: [PASSED]", logging.INFO)
-                        else:
-                            log_execution(logger, f"  [IMP] {year} | 0% Max Density -> 0% Built-up Fraction: [FAILED] ({impossible_built} violations)", logging.WARNING)
-                            all_passed = False
-
-        status_msg = "PASSED" if all_passed else "FAILED (See Warnings)"
-        log_execution(logger, f"\n=== Global QA Sweep Complete: {status_msg} ===", logging.INFO if all_passed else logging.WARNING)
-        
-        return all_passed
-
-    def build_wekeo_datalake(
-        self, 
+    def generate_execution_plan(
+        self,
         recipe: Dict[str, Any], 
-        wekeo_client: Any, 
-        inventory_filename: str = "wekeo_data_inventory.csv",
-        logger: Optional[logging.Logger] = None
-    ) -> List[str]:
+        logger: logging.Logger,
+        *,  # Forces subsequent arguments to be keyword-only to protect the parent signature
+        catalog_path_override: Optional[str] = None
+    ) -> pd.DataFrame:
         """
-        Backend Ingestion Engine: Downloads WEkEO data, perfectly aligns it to a 
-        master spatial grid, calculates statistical derivatives, and exports everything 
-        to Cloud Optimized GeoTIFFs (COGs) inside a structured Data Lake directory hierarchy.
+        Translates the YAML execution recipe into a standardized data fetching queue by 
+        intersecting user constraints against the WEkEO GeoParquet database.
+
+        This method acts as the primary translation layer between the abstract user request 
+        (e.g., "Give me Grassland data for 2018") and the physical data lake. It loads 
+        the SpatioTemporal Asset Catalog (STAC) stored as a GeoParquet file, parses the 
+        requested variables and temporal bounds from the recipe, and applies highly 
+        optimized Pandas boolean masking to filter out irrelevant files. The result is 
+        a flat, standardized execution queue ready for out-of-core parallel downloading 
+        and spatial warping.
 
         Parameters
         ----------
         recipe : Dict[str, Any]
-            A configuration dictionary containing the pipeline parameters, including 
-            target spatial grids, temporal bounds, resampling strategies, and output paths.
-        wekeo_client : Any
-            The initialized WEkEO Harmonised Data Access (HDA) API client used 
-            to execute spatial/temporal searches and download raw zip files.
-        inventory_filename : str, optional
-            The file name of the ground-truth WEkEO dataset inventory CSV, used to 
-            validate configurations and generate the query execution queue. 
-            Default is "wekeo_data_inventory.csv".
-        logger : logging.Logger, optional
-            A logger instance for recording execution progress, warnings, and errors. 
-            If None, a pipeline-specific logger is automatically configured.
+            The fully loaded and parsed YAML configuration dictionary. Must contain the 
+            'sources' and 'temporal' schema blocks to dictate the spatiotemporal bounds 
+            and requested specific variables.
+        logger : logging.Logger
+            The active logger instance used to record catalog intersection progress, 
+            connection/loading status, and the final extracted asset queue count.
+        catalog_path_override : Optional[str], default=None
+            A direct absolute or relative path to the GeoParquet STAC catalog. If provided, 
+            this explicitly overrides both the path specified in the YAML recipe and the 
+            hardcoded system default.
 
         Returns
         -------
-        List[str]
-            A list of file paths pointing to the successfully generated Cloud Optimized 
-            GeoTIFFs (COGs) within the Data Lake structure.
+        pd.DataFrame
+            A standardized execution queue containing the exact physical assets to be processed. 
+            The DataFrame contains the following enforced columns:
+            - `level` (str): The processing family or collection group (e.g., 'GRA').
+            - `variable` (str): The core scientific variable name (e.g., 'Grassland').
+            - `year` (int): The temporal year of the specific data slice.
+            - `aggregation` (str): The mathematical representation (e.g., 'coverage', 'max').
+            - `layer_class` (str): The categorical class label, if applicable.
+            - `vsi_path` (str): The direct file path or Virtual File System (VSI) URL to the GeoTIFF.
+            
+            Returns an empty DataFrame if no assets match the constraints or if the 
+            catalog file is missing/corrupted.
+
+        Notes
+        -----
+        The method executes in five distinct phases:
+        1. Hierarchy of path resolution (Override -> Recipe -> Default).
+        2. Configuration extraction and temporal bounding.
+        3. Vectorized Pandas boolean mask generation.
+        4. Asset URL extraction and queue standardization.
+        5. Finalization and DataFrame construction.
         """
-        import gc
-        import os
-        import sys
-        import shutil
+        import geopandas as gpd
+        
+        log_execution(logger, "Intersecting configuration recipe against WEkEO inventory...", logging.INFO)
+        
+        # =================================================================
+        # 1. HIERARCHY OF PATH RESOLUTION
+        # Resolves the catalog path by checking the override argument first, 
+        # falling back to the YAML recipe, and finally using a system default.
+        # =================================================================
+        
+        # Attempt to safely extract the catalog path defined within the user's YAML file
+        recipe_path = recipe.get('sources', {}).get('wekeo', {}).get('catalog_path')
+        
+        # Hardcoded fallback path assuming standard repository execution directory
+        default_path = "../../../meta/wekeo_lake/wekeo_lake_catalog.parquet"
+        
+        # Resolve the final path using Python's truthy 'or' evaluation (first non-None/non-empty wins)
+        final_parquet_path = catalog_path_override or recipe_path or default_path
+        
+        # Validate physical existence of the file before attempting to load it into memory
+        if not os.path.exists(final_parquet_path):
+            log_execution(logger, f"FATAL: GeoParquet database not found at '{final_parquet_path}'", logging.ERROR)
+            return pd.DataFrame()
 
-        raw_dir = recipe["paths"]["raw_dir"]
-        base_dir = recipe["paths"]["base_dir"] 
-        
-        cube_name = recipe.get('raw_config', {}).get('cube_name', 'datalake_build')
-        log_filepath = os.path.join(base_dir, f"{cube_name}.log")
-        
-        active_logger = self._setup_pipeline_logger(logger_name=cube_name, log_filepath=log_filepath)
-        
-        log_execution(active_logger, f"Starting Data Lake Ingestion for: {cube_name}", logging.INFO)
-
-        target_grid_key = recipe["spatial"]["target_grid_key"]
-        resampling_config = recipe["spatial"]["resampling_strategies"]
+        log_execution(logger, f"Reading GeoParquet catalog from: {final_parquet_path}", logging.INFO)
         
         try:
-            target_grid, target_res = target_grid_key.split("_", 1)
-        except ValueError:
-            target_grid, target_res = target_grid_key, "unknown"
-            
-        wekeo_config = recipe["sources"].get("wekeo", {})
-        if not wekeo_config.get("enabled", False):
-            return []
+            # Load the entire GeoParquet database into a GeoDataFrame. 
+            # Parquet is highly optimized, so reading this takes milliseconds even for millions of rows.
+            stac_gdf = gpd.read_parquet(final_parquet_path)
+        except Exception as e:
+            # Catch generic reading errors (e.g., corrupted file, missing compression libraries)
+            log_execution(logger, f"Failed to load GeoParquet Catalog: {e}", logging.ERROR)
+            return pd.DataFrame()
 
-        #Generate the metadata schema in case the data inventory is absent from the repository
-        metadata_schema = dict(zip(
-            [key for key in self.DATASET_MAP.keys()],
-            [get_dataset_variables(self.DATASET_MAP[key], wekeo_client)["constraints"][0] for key in self.DATASET_MAP.keys()]
-        ))
+        # =================================================================
+        # 2. CONFIGURATION EXTRACTION & TEMPORAL BOUNDS
+        # Parses the structural rules defined by the user in the YAML.
+        # =================================================================
+        
+        wekeo_cfg = recipe.get('sources', {}).get('wekeo', {})
+        
+        # Fast-fail if the WEkEO section is explicitly turned off in the config
+        if not wekeo_cfg.get('enabled', False):
+            log_execution(logger, "WEkEO processing explicitly disabled in recipe.", logging.INFO)
+            return pd.DataFrame()
 
-        # Generate the different queries based on the recipe
-        execution_queue = self.intersect_config_with_dataframe(
-            recipe=recipe, 
-            wekeo_client=wekeo_client, 
-            api_schema=metadata_schema, 
-            logger=active_logger
+        # Capture the dataset-specific resolution override (e.g., "highest", "10m", or None)
+        # This is saved as an instance attribute so the spatial_engine can access it later during warping
+        self.dataset_resolution_strategy = wekeo_cfg.get("dataset_resolution")
+        
+        # Extract the global temporal bounding window. 
+        # Provide extremely wide defaults (2000-2050) to prevent crashing if the user omits them.
+        temp_cfg = recipe.get('temporal', {})
+        start_year = temp_cfg.get('start_year', 2000)
+        end_year = temp_cfg.get('end_year', 2050)
+
+        execution_queue = []
+        categories = wekeo_cfg.get('categories', {})
+
+        # =================================================================
+        # 3. TRANSLATE YAML RULES TO PANDAS BOOLEAN MASKS
+        # Converts nested dictionary logic into flat lists for fast vector math.
+        # =================================================================
+        
+        active_collections = []
+        active_variables = []
+        
+        # Iterate through the nested config to build flat lists of approved items
+        for cat_name, cat_data in categories.items():
+            # Check if the broad collection category (e.g., "GRA", "TCF") is enabled
+            if cat_data.get("include", False):
+                active_collections.append(cat_name)
+                
+                # Check which specific datasets within that category are enabled
+                datasets = cat_data.get("datasets", {})
+                for var_name, var_data in datasets.items():
+                    if var_data.get("include", False):
+                        active_variables.append(var_name)
+
+        # Fast-fail if the user left WEkEO 'enabled' but turned off all actual data layers
+        if not active_collections or not active_variables:
+            log_execution(logger, "No active WEkEO collections or variables found in recipe.", logging.WARNING)
+            return pd.DataFrame()
+
+        # Construct the vectorized boolean mask. 
+        # This acts as a sieve, dropping any rows that do not strictly meet all four criteria.
+        base_mask = (
+            (stac_gdf['collection'].isin(active_collections)) &  # Must belong to an active collection
+            (stac_gdf['variable'].isin(active_variables)) &      # Must be an actively requested variable
+            (stac_gdf['year'] >= start_year) &                   # Must occur on or after the start year
+            (stac_gdf['year'] <= end_year)                       # Must occur on or before the end year
         )
+        
+        # Apply the mask to slice the GeoDataFrame
+        chunk = stac_gdf[base_mask]
 
-        if not execution_queue:
-            return []
-
-        generated_cogs = []
-
-        for query in execution_queue:
-            product_type = query.get("productType", "Unknown_Product")
-            clean_product = product_type.replace(' ', '_').replace('/', '_')
-            year = query.get("year", "AllYears")
+        # =================================================================
+        # 4. EXTRACT ASSET URLS AND BUILD THE WORKER QUEUE
+        # Maps the raw database columns to the parent engine's expected format.
+        # =================================================================
+        
+        for _, row in chunk.iterrows():
+            # Extract the actual system or network path to the physical GeoTIFF file
+            vsi_path = row.get("href")
             
-            dataset_id = query.get("dataset_id", "")
-            dataset_cat = dataset_id.split(":")[-1] if dataset_id else "UnknownDataset"
-            
-            safe_name = f"{clean_product}_{year}"
-            log_execution(active_logger, f"\n{'='*50}\nBuilding Data Lake Layer: {safe_name}\n{'='*50}", logging.INFO)
-
-            # Force the clean 'wekeo/dataset_id/product_layer' schema
-            safe_dataset_id = dataset_id.replace(":", "_")
-            isolated_raw_dir = os.path.join(raw_dir, "wekeo", safe_dataset_id, clean_product)
-            os.makedirs(isolated_raw_dir, exist_ok=True)
-            
-            download_dir = self._fetch_unpack_query(
-                wekeo_query=query, 
-                wekeo_client=wekeo_client, # <-- Fixed to match the expected keyword 
-                base_dir=isolated_raw_dir, 
-                logger=active_logger
-            )
-
-            # Force the code to continue even when fetch_unpack returns None
-            if not download_dir:
+            # Failsafe: Skip the row if the file path is structurally missing or null
+            if not pd.notna(vsi_path) or not vsi_path:
                 continue
 
-            tif_folder = os.path.join(download_dir, "tif_files")
-            vrt_path = os.path.join(tif_folder, f"{safe_name}.vrt")
+            # Append a clean, standardized dictionary to the execution list.
+            # This formatting perfectly aligns with what `spatiotemporal_cube.process_cube` expects.
+            execution_queue.append({
+                'level': row.get("collection"),     # Level determines the final output cube grouping (e.g., "GRA" cube)
+                'variable': row.get("variable"),    # Variable defines the specific scientific layer
+                'year': row.get("year"),            # Year becomes the Z-axis coordinate
+                'aggregation': row.get("aggregation"), # Will be mapped into the dimension structure
+                'layer_class': row.get("layer_class"), # Will be mapped into the dimension structure
+                'vsi_path': vsi_path                # The critical path passed to GDAL/rioxarray for reading
+            })
 
-            # Build the VRT based on the tif files being present and force continue if nothing is present
-            if not self.build_virtual_mosaic(tif_folder, vrt_path, active_logger):
-                continue
+        # =================================================================
+        # 5. FINALIZE AND RETURN
+        # =================================================================
+        
+        # Convert the standardized list of dictionaries back into a highly readable Pandas DataFrame
+        final_df = pd.DataFrame(execution_queue)
+        
+        # Provide final logging telemetry to help the user debug their YAML constraints if 0 assets matched
+        if final_df.empty:
+            log_execution(logger, "GeoParquet Query returned 0 assets. Check YAML constraints.", logging.WARNING)
+        else:
+            log_execution(logger, f"GeoParquet Intersection successful: queued {len(final_df)} target assets.", logging.INFO)
+      
+        return final_df
 
-            # Categorical Processing (Single-Band Fractional Coverages)
-            if product_type in self.CATEGORICAL_CLASSES:
-                discrete_strat = resampling_config.get('discrete', 'coverage')
-                if discrete_strat == 'coverage':
-                    aggr_name = "coverage"
-                    layer_dir = os.path.join(base_dir, dataset_cat, clean_product, aggr_name)
-                    os.makedirs(layer_dir, exist_ok=True)
-                    # Consitent filename schema
-                    file_prefix = f"{clean_product}_{year}_{target_grid}_{target_res}"
-                    
-                    log_execution(active_logger, "Processing as Single-Band Categorical Fractions...", logging.INFO)
-                    
-                    raw_class_dict = self.CATEGORICAL_CLASSES[product_type]
-                    class_mapping = {k: v for k, v in raw_class_dict.items() if k not in [48, 128, 254, 255]}
-                    target_classes = list(class_mapping.keys())
-                    
-                    try:
-                        fraction_cogs = self.process_virtual_mosaic(
-                            vrt_path=vrt_path, 
-                            strategy='coverage', 
-                            grid_name=target_grid_key,
-                            output_dir_or_file=layer_dir, 
-                            logger=active_logger, 
-                            class_values=target_classes,
-                            class_mapping=class_mapping,
-                            file_prefix=file_prefix 
-                        )
-                        
-                        generated_cogs.extend(fraction_cogs)
-                        # After data has been safely written, force interpreter to free up RAM resources
-                        gc.collect()
-                        
-                    except Exception as e:
-                        log_execution(active_logger, f"Failed fractional coverage for {safe_name}: {e}", logging.ERROR)
+    def resolve_target_grid(self, spatial_cfg: Dict[str, Any], logger: logging.Logger) -> str:
+        """
+        Dynamically resolves and validates the target spatial grid configuration.
 
-            # Continuous Processing (Multiple Statistics)
+        This method acts as the spatial gatekeeper for the WEkEO cube pipeline. It merges 
+        the global spatial configuration (e.g., a default target of "EEA_100m") with any 
+        dataset-specific resolution overrides defined in the YAML recipe (e.g., requesting 
+        the "highest" available resolution). It parses dynamic strategies, maps them against 
+        the physically supported frameworks in the core `GRID_REGISTRY`, and delegates 
+        final structural validation to the parent spatial engine.
+
+        Parameters
+        ----------
+        spatial_cfg : Dict[str, Any]
+            The 'spatial' configuration dictionary extracted from the execution recipe. 
+            Expected to contain fundamental constraints such as 'target_grid' (e.g., "EEA") 
+            and 'target_resolution' (e.g., "1km").
+        logger : logging.Logger
+            The active logger instance used to record resolution overrides, fallback 
+            warnings, and the finalized grid key.
+
+        Returns
+        -------
+        str
+            The strictly validated dictionary key (e.g., 'EEA_10km', 'Global_WGS84_30sec') 
+            that mathematically aligns with a predefined footprint in the `GRID_REGISTRY`.
+
+        Raises
+        ------
+        ValueError
+            Inherited from `resolve_grid_registry_key`. Raised if the final concatenated 
+            grid key does not explicitly exist in the `GRID_REGISTRY`.
+        """
+        # =================================================================
+        # 1. EXTRACT GLOBAL SPATIAL DEFAULTS
+        # Pull the baseline geographic target from the YAML recipe.
+        # =================================================================
+        
+        # Base grid network from global spatial config (e.g., "EEA" or "Global_EqualArea")
+        target_grid = spatial_cfg.get("target_grid")
+        
+        # Default spatial resolution from global spatial config (e.g., "100m")
+        final_resolution = spatial_cfg.get("target_resolution")
+        
+        # =================================================================
+        # 2. APPLY DATASET-SPECIFIC OVERRIDES
+        # Check if the user specified a WEkEO-specific resolution strategy 
+        # (captured earlier during the `generate_execution_plan` phase).
+        # =================================================================
+        
+        if hasattr(self, 'dataset_resolution_strategy') and self.dataset_resolution_strategy:
+            strategy = self.dataset_resolution_strategy
+            
+            # --- Dynamic Strategies ("highest" or "lowest") ---
+            # These require scanning the registry to find out what distances are actually supported.
+            if strategy in ['highest', 'lowest']:
+                
+                # Construct the search prefix to isolate grids belonging to the requested family.
+                # e.g., If target_grid is "EEA", the prefix is "EEA_"
+                prefix = f"{target_grid}_"
+                
+                # List comprehension to dynamically extract all valid resolution strings 
+                # (e.g., "100m", "250m", "10km") that belong to the chosen grid family.
+                allowed_resolutions = [
+                    key.replace(prefix, "") 
+                    for key in self.GRID_REGISTRY.keys()
+                    if key.startswith(prefix)
+                ]
+                
+                if allowed_resolutions:
+                    # Delegate the mathematical distance comparison (e.g., 100m vs 10km) 
+                    # to the parent spatial engine to figure out which string is the "highest".
+                    final_resolution = self._resolve_query_resolution(
+                        strategy=strategy, 
+                        available_res=allowed_resolutions, 
+                        logger=logger
+                    )
+                else:
+                    # Failsafe: If the registry is misconfigured or missing the grid family entirely.
+                    log_execution(
+                        logger, 
+                        f"Could not find any predefined resolutions for grid family '{target_grid}' in GRID_REGISTRY. "
+                        f"Falling back to global default.", 
+                        logging.WARNING
+                    )
+            
+            # --- Hardcoded Strategies (e.g., "10km") ---
             else:
-                cont_stats = resampling_config.get('continuous', ['average'])
-                if isinstance(cont_stats, str):
-                    cont_stats = [cont_stats]
+                # If the user explicitly defined an override string instead of a dynamic strategy.
+                final_resolution = strategy
+                
+            log_execution(logger, f"Applied WEkEO resolution override: {strategy} -> {final_resolution}", logging.INFO)
 
-                for stat in cont_stats:
-                    aggr_name = stat.lower()
-                    layer_dir = os.path.join(base_dir, dataset_cat, clean_product, aggr_name)
-                    os.makedirs(layer_dir, exist_ok=True)
-                    
-                    file_name = f"{clean_product}_{year}_{target_grid}_{target_res}_{aggr_name}.tif"
-                    final_cog_path = os.path.join(layer_dir, file_name)
-                    
-                    log_execution(active_logger, f"Calculating: {stat.upper()}", logging.INFO)
-                    try:
-                        temp_tif_path = os.path.join(layer_dir, f"temp_{file_name}")
-                        
-                        result_xr = self.process_virtual_mosaic(
-                            vrt_path=vrt_path, strategy='reproject', grid_name=target_grid_key,
-                            output_dir_or_file=temp_tif_path, logger=active_logger, resample_keyword=stat
-                        )
-                        
-                        self.export_to_cog(result_xr, final_cog_path, logger=active_logger)
-                        generated_cogs.append(final_cog_path)
-                        
-                        result_xr.close() 
-                        del result_xr
-                        
-                        if os.path.exists(temp_tif_path):
-                            os.remove(temp_tif_path)
-                            
-                        gc.collect()
-                        
-                    except Exception as e:
-                        log_execution(active_logger, f"Failed statistic '{stat}' for {safe_name}: {e}", logging.ERROR)
+        # =================================================================
+        # 3. STRICT STRUCTURAL VALIDATION
+        # =================================================================
+        
+        # Combine the base grid and the newly resolved resolution, then pass them 
+        # to the parent spatial engine. This guarantees the key exists and will 
+        # instantly halt execution if an unsupported grid is requested.
+        grid_key = self.resolve_grid_registry_key(target_grid, final_resolution, logger)
+        
+        log_execution(logger, f"WEkEO target grid safely finalized as: {grid_key}", logging.INFO)
+        
+        return grid_key
+    
+    def parse_metadata(self, row: pd.Series, da: xr.DataArray) -> Tuple[str, xr.DataArray]:
+        """
+        Extracts dataset-specific metadata and structurally prepares the array for spatial processing.
 
-        # Clean up disc space if keep_raw is set to False in recipe
-        self.cleanup_raw_storage(recipe=recipe, logger=active_logger)
-        # Validate the logic and consistency of the generated datalake
-        self.validate_datalake(base_dir=base_dir, logger=active_logger)
+        Raw GeoTIFFs fetched from remote storage are inherently flat spatial grids 
+        lacking multidimensional awareness. This method translates those flat grids 
+         into temporal slices by injecting a 'time' dimension. Crucially, it employs a 
+        string-encoding strategy to "smuggle" critical metadata (like aggregations and classes) 
+        through the parent engine's GDAL C++ warping functions, which natively strip complex 
+        Python coordinates.
 
-        log_execution(active_logger, "\n=== WEkEO Data Lake Ingestion Complete ===", logging.INFO)
-        return generated_cogs
+        Parameters
+        ----------
+        row : pd.Series
+            A single record from the standardized execution queue containing the contextual 
+            STAC metadata (e.g., year, aggregation, layer_class) for this specific asset.
+        da : xr.DataArray
+            The raw, lazily loaded spatial array returned by the out-of-core fetcher.
+
+        Returns
+        -------
+        Tuple[str, xr.DataArray]
+            A two-element tuple containing:
+            - The `level` grouping string (e.g., "GRA") used by the parent engine to route 
+              arrays into specific data cubes.
+            - The structurally enriched `DataArray`, renamed with the smuggled metadata and 
+              expanded along the correct temporal axis.
+        """
+        
+        # =================================================================
+        # 1. TEMPORAL METADATA EXTRACTION
+        # Parse the contextual metadata required for multidimensional stacking.
+        # =================================================================
+        
+        # Extract the parent processing family (e.g., 'TCF', 'GRA')
+        level = row['level']
+        
+        # Isolate the observation year and lock it to a standard January 1st Pandas datetime.
+        # This guarantees standard xarray time-series alignment later.
+        year = int(row['year'])
+        time_coord = pd.to_datetime(f"{year}-01-01")
+        
+        # =================================================================
+        # 2. DIMENSIONAL SANITIZATION & EXPANSION
+        # Clean the array structure to prevent out-of-core streaming failures.
+        # =================================================================
+        
+        # Safely remove the redundant 'band' dimension automatically added by rioxarray.
+        # Standard GeoTIFF formats crash if attempting to write 4-dimensional data 
+        # (e.g., time, band, y, x). Squeezing 'band' forces the array to a flat 2D (y, x).
+        if 'band' in da.dims:
+            da = da.squeeze('band').drop_vars('band', errors='ignore')
+            
+        # Expand the now 2D array into a true 3D temporal slice (time, y, x)
+        structured_da = da.expand_dims(time=[time_coord])
+        
+        # =================================================================
+        # 3. METADATA SMUGGLING (THE GDAL WORKAROUND)
+        # Encode complex categorical properties directly into the variable name.
+        # =================================================================
+        
+        # Safely extract the aggregation logic and the specific categorical class.
+        # Defaulting to 'unknown' prevents the pipeline from crashing on unexpected STAC schemas.
+        aggregation = row.get('aggregation', 'unknown')
+        layer_class = row.get('layer_class', 'unknown')
+        
+        # Create a highly unique routing string utilizing a double-underscore delimiter.
+        # Example output: "Forest_Type__coverage__Broadleaved_forest"
+        # 
+        # WHY: The parent `spatiotemporal_cube` passes this array to GDAL for spatial snapping.
+        # GDAL does not understand xarray's custom scalar coordinates and will drop them. 
+        # By baking the metadata directly into the array's core name, the metadata safely 
+        # survives the C++ transformation. The `apply_multi_index` function will later crack 
+        # this string open and restore the 'aggregation' and 'layer_class' dimensions.
+        structured_da.name = f"{row['variable']}__{aggregation}__{layer_class}"
+        
+        # Return the target cube grouping key and the safely encoded multidimensional array
+        return level, structured_da
+
+    def get_resample_rule(self, variable_name: str) -> str:
+        """
+        Determines the appropriate GDAL spatial resampling algorithm by decoding 
+        the structurally smuggled routing name.
+
+        During out-of-core affine reprojection, different physical and ecological 
+        variables require strictly different mathematical algorithms to prevent 
+        data corruption. Because standard GDAL C++ bindings strip away 
+        complex xarray coordinates, the `parse_metadata` method previously encoded 
+        the requested aggregation strategy directly into the variable's string name 
+        (e.g., "Forest_Type__coverage__Broadleaved_forest"). 
+        
+        This method acts as the decoder ring, splitting that string, extracting the 
+        user's requested aggregation, and safely translating it into an exact GDAL 
+        resampler keyword compatible with the parent spatial engine.
+
+        Parameters
+        ----------
+        variable_name : str
+            The heavily encoded variable name containing the scientific variable, 
+            the aggregation method, and the class label separated by double underscores 
+            (e.g., "Tree_Cover_Density__max__unknown").
+
+        Returns
+        -------
+        str
+            The strictly validated GDAL resampling string used for out-of-core warping. 
+            Returns "average" for fractional coverages, the direct statistical string 
+            for continuous variables (e.g., "max"), or safely falls back to "nearest" 
+            if the string is improperly formatted.
+        """
+        
+        # =================================================================
+        # 1. DECODE THE SMUGGLED METADATA
+        # =================================================================
+        
+        # Parse the string format using the delimiter: "Variable__Aggregation__Class"
+        # Example: "Grassland__coverage__Grassland" becomes ['Grassland', 'coverage', 'Grassland']
+        parts = variable_name.split("__")
+        
+        # Safely check if the string actually contained the smuggled metadata.
+        # If it only has 1 part, it's a raw variable name and bypasses the specific logic.
+        if len(parts) >= 2:
+            
+            # Isolate the aggregation rule (the second element) and standardize to lowercase
+            agg_rule = parts[1].lower()
+            
+            # =================================================================
+            # 2. DISCRETE FRACTIONAL COVERAGE ROUTING
+            # =================================================================
+            
+            # When downsampling discrete categorical maps (like Land Cover) into fractions,
+            # we must conserve the physical spatial volume (the amount of area covered).
+            # The mathematical arithmetic mean ("average") perfectly calculates the 
+            # continuous percentage of a binary mask within a new, larger pixel footprint.
+            if agg_rule == 'coverage':
+                return "average"
+                
+            # =================================================================
+            # 3. CONTINUOUS STATISTICAL ROUTING
+            # =================================================================
+            
+            # For continuous variables (like Tree Cover Density), the requested statistical 
+            # aggregations natively match their GDAL C++ integer constant string names 
+            # defined in `spatial_engine.GDAL_RESAMPLERS`.
+            if agg_rule in ['max', 'min', 'average', 'rms']:
+                return agg_rule
+                
+        # =================================================================
+        # 4. SAFETY FALLBACK
+        # =================================================================
+        
+        # If the variable lacks a defined rule, default to "nearest" (Nearest Neighbor).
+        # This is the safest global fallback because it strictly prevents interpolation, 
+        # ensuring categorical classes are not accidentally corrupted by floating-point math.
+        return "nearest"
+
+    def apply_multi_index(self, level: str, dataset: xr.Dataset) -> xr.Dataset:
+        """
+        Executes post-warp dimensionality reduction and reconstructs the finalized multi-dimensional data cube.
+
+        Because the core spatial engine relies on GDAL C++ bindings for out-of-core affine 
+        reprojection, any complex multidimensional structures (like specific class categories 
+        or aggregation strategies) are flattened into independent 2D/3D variables. 
+        This method acts as the "unpacker" to the `parse_metadata` method's "packer". 
+        It reads the smuggled metadata baked into the temporary variable names, promotes 
+        those strings back into actual dimensional coordinates, and concatenates the separated 
+        arrays back into a unified, mathematically clean N-dimensional `xarray.Dataset`.
+
+        Parameters
+        ----------
+        level : str
+            The processing family grouping string (e.g., 'GRA', 'TCF') being actively processed. 
+            While not strictly used for WEkEO index building, it fulfills the parent class's 
+            abstract method signature requirements.
+        dataset : xr.Dataset
+            The fully spatially warped, but dimensionally flat, Dataset returned by the 
+            spatial engine. Variables will have structurally encoded names 
+            (e.g., 'Tree_Cover_Density__max__unknown').
+
+        Returns
+        -------
+        xr.Dataset
+            The finalized, scientifically structured multidimensional Dataset. 
+            Variables are restored to their base names (e.g., 'Tree_Cover_Density') and 
+            expanded along strict categorical dimensions (e.g., 'layer_class' or 'aggregation').
+        """
+        
+        # =================================================================
+        # 1. INITIALIZATION
+        # =================================================================
+        
+        # Dictionary to hold the grouped 3D/4D arrays before final concatenation.
+        # Structure will be: {'Base_Variable': [DataArray_1, DataArray_2, ...]}
+        grouped_arrays = {}
+        
+        # =================================================================
+        # 2. DECODING & DIMENSIONAL EXPANSION
+        # Iterate over all the flattened, disjointed variables returned from GDAL.
+        # =================================================================
+        
+        for temp_var_name, da in dataset.data_vars.items():
+            
+            # Crack open the smuggled string using the double-underscore delimiter.
+            # Example: "Forest_Type__coverage__Broadleaved_forest"
+            parts = str(temp_var_name).split("__")
+            
+            # Safely extract the components. 
+            # If the string was perfectly formatted, it yields exactly 3 parts. 
+            # If not, it falls back to 'unknown' to prevent index errors.
+            base_var = parts[0]
+            agg_val = parts[1] if len(parts) > 1 else 'unknown'
+            class_val = parts[2] if len(parts) > 2 else 'unknown'
+            
+            # --- Expand the DataArray along a new Z-axis dimension ---
+            # If the data is a discrete fractional mask (routed via 'coverage'),
+            # the meaningful dimensional axis is the target class (e.g., Broadleaved vs Coniferous).
+            if agg_val == 'coverage':
+                # The 3D array (time, y, x) becomes 4D (layer_class, time, y, x)
+                da = da.expand_dims(layer_class=[class_val])
+                
+            # If the data is a continuous variable (routed via 'max', 'average', etc.),
+            # the meaningful dimensional axis is the statistical aggregation method.
+            else:
+                # The 3D array (time, y, x) becomes 4D (aggregation, time, y, x)
+                da = da.expand_dims(aggregation=[agg_val])
+            
+            # =================================================================
+            # 3. VARIABLE GROUPING
+            # =================================================================
+            
+            # Strip the routing string off the data array so its internal name 
+            # reverts to the clean scientific variable (e.g., "Forest_Type").
+            da.name = base_var
+            
+            # Drop the newly expanded array into the grouping dictionary under its base name.
+            if base_var not in grouped_arrays:
+                grouped_arrays[base_var] = []
+            grouped_arrays[base_var].append(da)
+            
+        # =================================================================
+        # 4. DATASET RECONSTRUCTION (CONCATENATION)
+        # =================================================================
+        
+        # Initialize the fresh, empty Dataset that will hold the final cube.
+        final_dataset = xr.Dataset()
+        
+        for base_var, arrays in grouped_arrays.items():
+            
+            # Dynamically determine which dimension to glue the arrays together along.
+            # It checks the first array in the grouped list to see if it was expanded 
+            # along 'layer_class' (discrete) or 'aggregation' (continuous).
+            concat_dim = 'layer_class' if 'layer_class' in arrays[0].dims else 'aggregation'
+            
+            # Use xarray's high-performance concat tool to smash the list of 4D slices 
+            # together into a unified multidimensional variable, and assign it to the Dataset.
+            # Example: Three arrays of size (1, time, y, x) become one array of size (3, time, y, x).
+            final_dataset[base_var] = xr.concat(arrays, dim=concat_dim)
+            
+        return final_dataset

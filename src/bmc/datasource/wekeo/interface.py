@@ -9,6 +9,15 @@ import urllib.parse
 from hda import Client
 from bmc.utils.logger import log_execution
 
+DATASET_MAP = {
+        "TCF": "EO:EEA:DAT:HRL:TCF",
+        "GRA": "EO:EEA:DAT:HRL:GRA",
+        "IMP": "EO:EEA:DAT:HRL:IMP",
+        "SLF": "EO:EEA:DAT:HRL:SLF",
+        "CRL": "EO:EEA:DAT:HRL:CRL", 
+        "CORINE": "EO:EEA:DAT:CORINE"
+    } 
+
 def generate_wekeo_query(
     dataset_id: str, 
     product_type: str, 

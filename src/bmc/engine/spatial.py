@@ -13,6 +13,7 @@ import xarray as xr
 import pandas as pd
 import rioxarray
 from osgeo import gdal
+import uuid
 from pyproj import CRS, Transformer
 from rasterio.warp import transform_bounds
 from rasterio.transform import from_origin
@@ -219,6 +220,66 @@ class spatial_engine():
         
         return logger
     
+    def _parse_res_to_meters(self, res_str: str) -> float:
+        """
+        Converts a resolution string (e.g., '10m', '1km') into a float in meters.
+        
+        This helper is required for mathematical comparisons between different 
+        available raw data resolutions.
+        """
+        res_str = res_str.lower().strip()
+        if 'km' in res_str:
+            return float(res_str.replace('km', '')) * 1000
+        elif 'm' in res_str:
+            return float(res_str.replace('m', ''))
+        else:
+            # Fallback for unexpected formats (like arc-seconds)
+            # You can extend this logic as needed for Global_WGS84 grids
+            return 999999.0
+
+    def _resolve_query_resolution(
+        self, 
+        strategy: str, 
+        available_res: List[str], 
+        logger: Optional[logging.Logger] = None
+    ) -> str:
+        """
+        Determines the single best resolution string to use based on a strategy.
+
+        Parameters
+        ----------
+        strategy : str
+            Options: 'highest' (smallest meters), 'lowest' (largest meters), 
+            or a specific value like '20m'.
+        available_res : list of str
+            The unique resolution strings found in the inventory for a specific product.
+        """
+        if strategy not in ['highest', 'lowest'] and strategy in available_res:
+            return strategy
+            
+        # Create a mapping: {meters: 'string_name'}
+        res_map = {self._parse_res_to_meters(r): r for r in available_res}
+        
+        if not res_map:
+            return "UNKNOWN"
+
+        if strategy == 'highest':
+            # Smallest distance = Highest resolution
+            return res_map[min(res_map.keys())]
+        elif strategy == 'lowest':
+            # Largest distance = Lowest resolution
+            return res_map[max(res_map.keys())]
+        else:
+            # If a specific res was requested but isn't available, 
+            # we default to 'highest' and log a warning.
+            best_guess = res_map[min(res_map.keys())]
+            log_execution(
+                logger, 
+                f"Requested query resolution '{strategy}' not found. Falling back to highest available: {best_guess}", 
+                logging.WARNING
+            )
+            return best_guess
+
     def resolve_grid_registry_key(
         self, 
         target_grid: str, 
@@ -522,59 +583,6 @@ class spatial_engine():
 
         return ds
 
-    def build_virtual_mosaic(
-        self,
-        input_folder: str, 
-        output_vrt_path: str, 
-        logger: Optional[logging.Logger] = None
-    ) -> Optional[str]:
-        """
-        Creates a lightweight Virtual Raster (VRT) blueprint from multiple GeoTIFF tiles.
-
-        This method discovers all `.tif` files in a folder and creates an XML-based `.vrt` 
-        file, mosaicking them together at their native resolution.
-
-        Parameters
-        ----------
-        input_folder : str
-            The directory containing the raw `.tif` tiles.
-        output_vrt_path : str
-            The destination file path for the blueprint (must end in `.vrt`).
-        logger : logging.Logger, optional
-            The logger instance to use for recording execution messages. Default is ``None``.
-
-        Returns
-        -------
-        str or None
-            The file path to the generated `.vrt` file. Returns ``None`` if no tiles were found.
-        """
-        # Enable errors
-        gdal.UseExceptions()
-        
-        tif_files = glob.glob(f"{input_folder}/*.tif")
-        if not tif_files:
-            log_execution(logger, f"No .tif files found in '{input_folder}'.", logging.WARNING)
-            return None
-
-        log_execution(logger, f"Found {len(tif_files)} files. Building VRT blueprint...", logging.INFO)
-
-        try:
-            os.makedirs(os.path.dirname(os.path.abspath(output_vrt_path)), exist_ok=True)
-
-            # Build the VRT without any resampling options
-            vrt = gdal.BuildVRT(output_vrt_path, tif_files)
-            
-            # Critical: Flush cache and destroy the python object to force GDAL to write the XML to disk
-            vrt.FlushCache()
-            vrt = None 
-
-            log_execution(logger, f"Virtual mosaic successfully saved to: {output_vrt_path}", logging.INFO)
-            return output_vrt_path
-
-        except Exception as e:
-            log_execution(logger, f"Error building virtual mosaic: {e}", logging.ERROR, exc_info=True)
-            raise
-
     def affine_reproject(
         self, 
         input_data: Any, 
@@ -752,288 +760,47 @@ class spatial_engine():
                 except OSError:
                     pass             
         return rioxarray.open_rasterio(output_filepath, chunks={'x': 2048, 'y': 2048})
-
-    def calculate_fractional_coverages(
-        self,
-        ds: Union[xr.DataArray, xr.Dataset, str], 
+    
+    def compute_class_fraction(
+        self, 
+        da: xr.DataArray, 
+        class_value: int, 
         grid_name: str, 
-        output_dir: str, 
-        class_values: Optional[list[int]] = None,
-        class_mapping: Optional[dict] = None,  # <--- NEW: Dictionary mapping ints to names
-        file_prefix: str = "fractional",
         logger: Optional[logging.Logger] = None
-    ) -> List[str]:
+    ) -> xr.DataArray:
         """
-        Calculates the fractional coverage of categorical classes snapped to a target grid,
-        exporting each specific class as an independent Single-Band Cloud Optimized GeoTIFF.
-
-        This method takes a categorical raster (e.g., Land Cover) and processes it class 
-        by class. For each requested class, it isolates the pixels by generating a binary 
-        mask (1 for presence, 0 for absence, NaN for NoData). It then routes this mask 
-        through the `affine_reproject` engine using the 'average' resampling algorithm 
-        to calculate the precise continuous fraction (0.0 to 1.0) of that class within 
-        the new, resampled target cell footprint.
-
-        To prevent Out-Of-Memory (OOM) crashes during large regional processing, this 
-        method incorporates aggressive cyclic garbage collection and safe disk-handoffs 
-        for temporary arrays.
-
-        Parameters
-        ----------
-        ds : xarray.DataArray, xarray.Dataset, or str
-            The categorical spatial data to be processed. Can be a pre-loaded lazy 
-            xarray object or a physical file path string pointing to a raster on disk.
-        grid_name : str
-            The key of the master grid (e.g., "EEA_100m") defined in the class registry 
-            to which the fractional data will be strictly aligned and snapped.
-        output_dir : str
-            The destination directory where the generated fractional COGs and 
-            temporary processing files will be stored.
-        class_values : list of int, optional
-            A specific list of integer class values to process. If None, the method 
-            will read the raster blocks to dynamically discover all unique pixel 
-            values present in the dataset.
-        class_mapping : dict, optional
-            A dictionary mapping integer class values to human-readable string names 
-            (e.g., {1: 'Broadleaved_Forest'}). Used to generate clean, readable 
-            filenames. If None, the integer will be used (e.g., 'class_1').
-        file_prefix : str, optional
-            The base string prefixed to every generated output file. 
-            Default is "fractional".
-        logger : logging.Logger, optional
-            The logger instance used to record execution phases, memory cleanup, 
-            and non-fatal file-lock warnings. Default is None.
-
-        Returns
-        -------
-        list of str
-            A list containing the file paths to all successfully generated, 
-            single-band Cloud Optimized GeoTIFFs (COGs).
-
-        Raises
-        ------
-        Exception
-            If the underlying GDAL Warp operation encounters a fatal failure 
-            or if hard drive write permissions are denied, the error is logged 
-            and re-raised to halt the pipeline.
+        Pure spatial math primitive: Isolates a single class from a categorical 
+        raster and calculates its continuous fractional coverage on a target grid.
+        No disk I/O occurs here other than GDAL's temporary warp buffering.
         """
-        os.makedirs(output_dir, exist_ok=True)
-        
-        if isinstance(ds, (str, Path)):
-            log_execution(logger, f"Lazy-loading categorical raster from path: {ds}", logging.INFO)
-            ds = rioxarray.open_rasterio(ds, chunks=True) 
-        
-        if isinstance(ds, xr.Dataset):
-            var_name = list(ds.data_vars)[0]
-            da = ds[var_name]
-        else:
-            da = ds
-            
         nodata_val = da.rio.nodata
 
-        if class_values is None:
-            log_execution(logger, "Finding unique classes...", logging.INFO)
-            unique_vals = da.data.map_blocks(np.unique).compute()
-            unique_vals = np.unique(unique_vals) 
-            class_values = [int(v) for v in unique_vals if v not in [nodata_val, np.nan]]
-            
-        log_execution(logger, f"Calculating single-band fractions for {len(class_values)} classes...", logging.INFO)
+        # 1. Create the Binary Mask
+        mask = (da == class_value).astype(np.float32)
+        if nodata_val is not None:
+            mask = mask.where(da != nodata_val, np.nan)
+        
+        mask.rio.write_crs(da.rio.crs, inplace=True)
+        mask.rio.write_transform(da.rio.transform(), inplace=True)
+        mask.rio.write_nodata(np.nan, inplace=True)
 
-        generated_cogs = []
+        # Create a unique virtual file path to prevent thread collisions
+        vsimem_path = f"/vsimem/temp_frac_{uuid.uuid4().hex}.tif"
 
-        for cls in class_values:
-            cls_int = int(cls)
-            
-            if class_mapping and cls_int in class_mapping:
-                cls_name = str(class_mapping[cls_int]).replace(" ", "_").replace("/", "_").replace("-", "_")
-            else:
-                cls_name = f"class_{cls_int}"
-                
-            log_execution(logger, f"\n--- Processing Class: {cls_int} ({cls_name}) ---", logging.INFO)
-            
-            # Create the Lazy Mask
-            mask = (da == cls).astype(np.float32)
+        # Warp using the 'average' rule to calculate volume-conserving fractions
+        frac_da = self.affine_reproject(
+            input_data=mask, 
+            output_filepath=vsimem_path,  
+            grid_name=grid_name, 
+            resample_keyword="average",
+            logger=logger
+        )
 
-            if nodata_val is not None:
-                mask = mask.where(da != nodata_val, np.nan)
-            
-            mask.rio.write_crs(da.rio.crs, inplace=True)
-            mask.rio.write_transform(da.rio.transform(), inplace=True)
-            mask.rio.write_nodata(np.nan, inplace=True)
-            
-            # The Disk Handoff
-            raw_mask_path = os.path.join(output_dir, f"temp_raw_mask_{cls_int}.tif")
-            temp_warp_path = os.path.join(output_dir, f"temp_warp_{cls_int}.tif") 
-            
-            log_execution(logger, "Streaming binary mask to disk...", logging.INFO)
-            mask.rio.to_raster(raw_mask_path, tiled=True, windowed=True)
-            
-            # GDAL Warp to temporary file
-            log_execution(logger, "Executing GDAL C++ Warp...", logging.INFO)
-            
-            # Save the raw dataset to a dedicated variable
-            raw_frac_da = self.affine_reproject(
-                input_data=raw_mask_path, 
-                output_filepath=temp_warp_path, 
-                grid_name=grid_name, 
-                resample_keyword="average",
-                logger=logger
-            )
-            
-            # Clean up the output structure into a new view
-            frac_da = raw_frac_da.squeeze().drop_vars("band", errors="ignore")
-            frac_da.name = f"fraction_{cls_name}"
-            
-            # Bake the final Cloud Optimized GeoTIFF 
-            final_cog_name = f"{file_prefix}_{cls_name}.tif"
-            final_cog_path = os.path.join(output_dir, final_cog_name)
-            
-            self.export_to_cog(frac_da, final_cog_path, logger=logger)
-            generated_cogs.append(final_cog_path)
-            
-            # Clean up RAM and Disk Locks
-            raw_frac_da.close()
-            frac_da.close()     
-            del raw_frac_da
-            del frac_da
-            
-            # Force the garbage collector to run BEFORE we try to delete files
-            gc.collect()
-            
-            if os.path.exists(raw_mask_path):
-                try:
-                    os.remove(raw_mask_path)
-                except Exception as e:
-                    log_execution(logger, f"Warning: Could not delete temp mask {raw_mask_path}: {e}", logging.WARNING)
-                    
-            if os.path.exists(temp_warp_path):
-                try:
-                    os.remove(temp_warp_path) 
-                except Exception as e:
-                    log_execution(logger, f"Warning: Could not delete temp warp {temp_warp_path}: {e}", logging.WARNING)
+        # Force xarray to load the data into standard Python RAM
+        frac_da.load()
 
-        log_execution(logger, f"All {len(generated_cogs)} single-band fractional COGs baked into '{output_dir}'.", logging.INFO)
-        return generated_cogs
-    
-    def process_virtual_mosaic(
-        self, 
-        vrt_path: str, 
-        strategy: str, 
-        grid_name: str,
-        output_dir_or_file: str,
-        logger: Optional[logging.Logger] = None,
-        **kwargs
-    ) -> Union[xr.DataArray, xr.Dataset]:
-        """
-        Routes a Virtual Raster (VRT) blueprint to the appropriate spatial processing algorithm.
+        # Explicitly delete the file from GDAL's C++ memory heap
+        gdal.Unlink(vsimem_path)
 
-        This dispatcher function delays heavy pixel-crunching until the exact mathematical 
-        strategy is determined. It handles the I/O handoff, routing the lightweight XML 
-        blueprint to either a standard GDAL affine reprojection or a categorical 
-        fractional coverage calculator.
-
-        Parameters
-        ----------
-        vrt_path : str
-            The file path to the source `.vrt` file.
-        strategy : str
-            The processing algorithm to apply. Valid options: 'reproject', 'coverage'.
-        grid_name : str
-            The key of the target grid defined in the class grid registry.
-        output_dir_or_file : str
-            If strategy is 'reproject', this should be the output file path (.tif).
-            If strategy is 'coverage', this should be the output directory.
-        logger : logging.Logger, optional
-            The logger instance to use for recording execution messages. Default is ``None``.
-        **kwargs : dict
-            Keyword arguments passed directly to the chosen processing function 
-            (e.g., class_values, resample_keyword, compress_mode).
-
-        Returns
-        -------
-        xarray.DataArray or xarray.Dataset
-            The lazily loaded result of the processing step. Returns a single DataArray 
-            for standard reprojections, or a multi-variable Dataset for fractional coverages.
-
-        Raises
-        ------
-        FileNotFoundError
-            If the specified VRT file does not exist on disk.
-        ValueError
-            If an invalid strategy string is provided.
-        Exception
-            If the underlying processing pipeline encounters a failure.
-
-        See Also
-        --------
-        affine_reproject : The underlying method utilized when the 'reproject' strategy is selected.
-        calculate_fractional_coverages : The underlying method utilized when the 'coverage' strategy is selected.
-
-        Examples
-        --------
-        Case 1: Standard Reprojection
-        Passing a VRT blueprint to be reprojected into a single GeoTIFF. In this case, 
-        ``output_dir_or_file`` must be a file path. We utilize all available optional 
-        arguments for the underlying ``affine_reproject`` method via ``**kwargs``.
-
-        >>> output_array = cube.process_virtual_mosaic(
-        ...     vrt_path="temp/elevation_blueprint.vrt",
-        ...     strategy="reproject",
-        ...     grid_name="EEA_1km",
-        ...     output_dir_or_file="outputs/reprojected_elevation.tif",
-        ...     logger=my_logger,
-        ...     resample_keyword="bilinear",
-        ...     compress_mode="deflate",
-        ...     memory_limit_bytes=8192
-        ... )
-        >>> type(output_array)
-        <class 'xarray.core.dataarray.DataArray'>
-
-        Case 2: Fractional Coverage Calculation
-        Passing a categorical VRT blueprint to compute fractional coverages for specific 
-        classes. In this case, ``output_dir_or_file`` must be a directory path. We 
-        utilize all available optional arguments for the underlying 
-        ``calculate_fractional_coverages`` method via ``**kwargs``.
-
-        >>> output_dataset = cube.process_virtual_mosaic(
-        ...     vrt_path="temp/landcover_blueprint.vrt",
-        ...     strategy="coverage",
-        ...     grid_name="EEA_1km",
-        ...     output_dir_or_file="outputs/fractional_layers/",
-        ...     logger=my_logger,
-        ...     class_values=[11, 12, 41, 42]
-        ... )
-        >>> type(output_dataset)
-        <class 'xarray.core.dataset.Dataset'>
-        """
-        if not os.path.exists(vrt_path):
-            raise FileNotFoundError(f"VRT blueprint not found at: {vrt_path}")
-
-        log_execution(logger, f"Initializing '{strategy}' processing pipeline for VRT...", logging.INFO)
-
-        try:
-            if strategy.lower() == 'reproject':
-                return self.affine_reproject(
-                    input_data=vrt_path, 
-                    output_filepath=output_dir_or_file, 
-                    grid_name=grid_name, 
-                    logger=logger, 
-                    **kwargs
-                )
-                
-            elif strategy.lower() == 'coverage':
-                return self.calculate_fractional_coverages(
-                    ds=vrt_path, 
-                    grid_name=grid_name, 
-                    output_dir=output_dir_or_file, 
-                    logger=logger, 
-                    **kwargs
-                )
-                
-            else:
-                raise ValueError(f"Unknown processing strategy: '{strategy}'. Must be 'reproject' or 'coverage'.")
-
-        except Exception as e:
-            log_execution(logger, f"Pipeline failure during {strategy}: {e}", logging.ERROR, exc_info=True)
-            raise
+        return frac_da.squeeze().drop_vars("band", errors="ignore")
     
