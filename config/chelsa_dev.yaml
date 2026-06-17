@@ -1,13 +1,12 @@
 base_dir: "./test_outputs/"
 cube_name: "micro_lake_2"
-wekeo_lake: ""
 
 # ======================================================================
 # 1. SPATIAL & TEMPORAL SELECTION
 # ======================================================================
 spatial:
   target_grid: "EEA"
-  target_resolution: "100m"
+  target_resolution: "500m"
   use_bbox: true  
   bbox:
       long_min: 4.24
@@ -16,9 +15,9 @@ spatial:
       lat_max: 50.91
 
 temporal:
-  start_year: 2000
+  start_year: 2018
   start_month: 1
-  end_year: 2000
+  end_year: 2019
   end_month: 2
 
 resampling:
@@ -38,91 +37,262 @@ sources:
   # --------------------------------------------------------------------
   wekeo:
     enabled: true
-    query_resolution: "highest" # Automatically fetches highest available resolution (e.g., 10m over 100m)
-    datasets:
+    dataset_resolution: "250m" # Fetches the finest raw data before upscaling/downscaling
+    catalog_path: 
+    # ------------------------------------------------------------------
+    # GLOBAL DEFAULTS for WEkEO
+    # If a dataset below doesn't specify an override, it inherits these.
+    # ------------------------------------------------------------------
+    defaults:
+      continuous_aggregations: 
+        - "average"
+        - "max"
+        - "min"
+        - "rms"
+      discrete_classes: "all" # Instructs the engine to fetch every available class
+
+    # ------------------------------------------------------------------
+    # DATA INVENTORY (Grouped by GeoParquet 'collection' Keys)
+    # ------------------------------------------------------------------
+    categories:
       
       # --- Tree Cover & Forest (TCF) ---
       TCF:
         include: true
-        productTypes:
-          "Tree Cover Density": true
-          "Forest Type": true
-          "Dominant Leaf Type": false
-          "Broadleaved Cover Density": false
-          "Coniferous Cover Density": false
-          "Forest Additional Support Layer": false
+        datasets:
+          Tree_Cover_Density:
+            include: true
+            type: "continuous"
+          
+          Forest_Type:
+            include: true
+            type: "discrete"
+            # OVERRIDE: We only want specific classes
+            classes:
+              - "Broadleaved_forest"
+              - "Coniferous_forest"
+              
+          Dominant_Leaf_Type:
+            include: false
+            type: "discrete"
+            
+          Broadleaved_Cover_Density:
+            include: false
+            type: "continuous"
+            
+          Coniferous_Cover_Density:
+            include: false
+            type: "continuous"
+            
+          Forest_Additional_Support_Layer:
+            include: false
+            type: "discrete"
+            
           # Confidence Layers
-          "Tree Cover Density Confidence Layer": false
-          "Dominant Leaf Type Confidence Layer": false
+          Tree_Cover_Density_Confidence_Layer:
+            include: false
+            type: "continuous"
+            aggregations: ["average"]
+            
+          Dominant_Leaf_Type_Confidence_Layer:
+            include: false
+            type: "continuous"
+            aggregations: ["average"]
 
       # --- Grassland (GRA) ---
       GRA:
         include: true
-        productTypes:
-          "Grassland": true
-          "Herbaceous Cover": false
-          "Ploughing Indicator": false
-          "Grassland Mowing Events": false
-          "Grassland Mowing Dates (4 Dates per Year)": false
+        datasets:
+          Grassland:
+            include: true
+            type: "discrete"
+            
+          Herbaceous_Cover:
+            include: false
+            type: "continuous"
+            
+          Ploughing_Indicator:
+            include: false
+            type: "discrete"
+            
+          Grassland_Mowing_Events:
+            include: false
+            type: "discrete"
+            
+          Grassland_Mowing_Dates:
+            include: false
+            type: "discrete"
+            
           # Confidence Layers
-          "Grassland Confidence Layer": false
-          "Grassland Mowing Events Confidence Layer": false
+          Grassland_Confidence_Layer:
+            include: false
+            type: "continuous"
+            aggregations: ["average"]
+            
+          Grassland_Mowing_Events_Confidence_Layer:
+            include: false
+            type: "continuous"
+            aggregations: ["average"]
 
       # --- Imperviousness (IMP) ---
       IMP:
         include: false
-        productTypes:
-          "Imperviousness Density": true
-          "Impervious Built-up": false
-          "Share of Built-up": false
+        datasets:
+          Imperviousness_Density:
+            include: true
+            type: "continuous"
+            
+          Impervious_Built_up:
+            include: false
+            type: "discrete"
+            
+          Share_of_Built_up:
+            include: false
+            type: "continuous"
+            
           # Confidence Layers
-          "Confidence layer for Imperviousness Density": false
-          "Confidence layer for Impervious Built-up": false
+          Confidence_layer_for_Imperviousness_Density:
+            include: false
+            type: "continuous"
+            aggregations: ["average"]
+            
+          Confidence_layer_for_Impervious_Built_up:
+            include: false
+            type: "continuous"
+            aggregations: ["average"]
 
       # --- Small Woody Features (SLF) ---
       SLF:
         include: false
-        productTypes:
-          "Small Woody Features": true
-          "Woody Vegetation Layer": false
-          "Forest Mask": false
-          "Crop Mask": false
+        datasets:
+          Small_Woody_Features:
+            include: true
+            type: "discrete"
+            
+          Woody_Vegetation_Layer:
+            include: false
+            type: "discrete"
+            
+          Forest_Mask:
+            include: false
+            type: "discrete"
+            
+          Crop_Mask:
+            include: false
+            type: "discrete"
 
       # --- Cropland (CRL) ---
       CRL:
         include: false
-        productTypes:
-          "Crop Types": true
-          "Cropping Seasons Yearly": false
-          "Fallow Land Presence": false
-          "Bare Soil Before": false
-          "Bare Soil After": false
-          "Main Crop Emergence": false
-          "Main Crop Harvest": false
-          "Main Crop Duration": false
-          "Secondary Crops Type": false
-          "Secondary Crops Emergence": false
-          "Secondary Crops Duration": false
+        datasets:
+          Crop_Types:
+            include: true
+            type: "discrete"
+            
+          Cropping_Seasons_Yearly:
+            include: false
+            type: "discrete"
+            
+          Fallow_Land_Presence:
+            include: false
+            type: "discrete"
+            
+          Bare_Soil_Before:
+            include: false
+            type: "discrete"
+            
+          Bare_Soil_After:
+            include: false
+            type: "discrete"
+            
+          Main_Crop_Emergence:
+            include: false
+            type: "discrete"
+            
+          Main_Crop_Harvest:
+            include: false
+            type: "discrete"
+            
+          Main_Crop_Duration:
+            include: false
+            type: "continuous"
+            
+          Secondary_Crops_Type:
+            include: false
+            type: "discrete"
+            
+          Secondary_Crops_Emergence:
+            include: false
+            type: "discrete"
+            
+          Secondary_Crops_Duration:
+            include: false
+            type: "continuous"
+            
           # Confidence Layers
-          "Crop Types Confidence Layer": false
-          "Fallow Land Presence Confidence Layer": false
-          "Bare Soil Before Confidence Layer": false
-          "Bare Soil After Confidence Layer": false
-          "Main Crop Emergence Confidence Layer": false
-          "Main Crop Harvest Confidence Layer": false
-          "Main Crop Duration Confidence Layer": false
-          "Secondary Crops Duration Confidence Layer": false
+          Crop_Types_Confidence_Layer:
+            include: false
+            type: "continuous"
+            aggregations: ["average"]
+            
+          Fallow_Land_Presence_Confidence_Layer:
+            include: false
+            type: "continuous"
+            aggregations: ["average"]
+            
+          Bare_Soil_Before_Confidence_Layer:
+            include: false
+            type: "continuous"
+            aggregations: ["average"]
+            
+          Bare_Soil_After_Confidence_Layer:
+            include: false
+            type: "continuous"
+            aggregations: ["average"]
+            
+          Main_Crop_Emergence_Confidence_Layer:
+            include: false
+            type: "continuous"
+            aggregations: ["average"]
+            
+          Main_Crop_Harvest_Confidence_Layer:
+            include: false
+            type: "continuous"
+            aggregations: ["average"]
+            
+          Main_Crop_Duration_Confidence_Layer:
+            include: false
+            type: "continuous"
+            aggregations: ["average"]
+            
+          Secondary_Crops_Duration_Confidence_Layer:
+            include: false
+            type: "continuous"
+            aggregations: ["average"]
 
       # --- CORINE Land Cover ---
-      # Note: CORINE explicitly defines years in the product name
       CORINE:
         include: false
-        productTypes:
-          "Corine Land Cover 2018": true
-          "Corine Land Cover 2012": false
-          "Corine Land Cover 2006": false
-          "Corine Land Cover 2000": false
-          "Corine Land Cover 1990": false
+        datasets:
+          Corine_Land_Cover_2018:
+            include: true
+            type: "discrete"
+            
+          Corine_Land_Cover_2012:
+            include: false
+            type: "discrete"
+            
+          Corine_Land_Cover_2006:
+            include: false
+            type: "discrete"
+            
+          Corine_Land_Cover_2000:
+            include: false
+            type: "discrete"
+            
+          Corine_Land_Cover_1990:
+            include: false
+            type: "discrete"
 
   # --------------------------------------------------------------------
   # CHELSA DATASETS (High-Resolution Climatologies)
@@ -130,7 +300,7 @@ sources:
   chelsa:
     enabled: true
     levels:
-      
+    catalog_path: 
       # --- DAILY TIME SERIES (Inherits global 'temporal' block) ---
       daily:
         include: true

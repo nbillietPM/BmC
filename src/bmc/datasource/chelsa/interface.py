@@ -1,9 +1,19 @@
-from bmc.utils.logger import log_execution
+# Standard library imports
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
+import os
+from typing import List, Optional
+
+# Third-party imports
 import boto3
 from botocore import UNSIGNED
 from botocore.client import Config
 import pandas as pd
-from typing import List, Optional
+import pystac
+import stac_geoparquet
+
+# Local application/project imports
+from bmc.utils.logger import log_execution
 
 def build_chelsa_catalog(
     bucket_name: str = 'chelsa02',
@@ -138,3 +148,214 @@ def build_chelsa_catalog(
     log_execution(logger, f"Catalog complete! Successfully inventoried {len(df)} files.", logging.INFO)
     
     return df
+
+def fetch_and_build_items(prefix: str, base_http: str) -> list:
+    """
+    Worker function that scans a specific sub-folder in the CHELSA S3 bucket 
+    and builds STAC Items in memory.
+
+    Parameters
+    ----------
+    prefix : str
+        The S3 directory prefix to scan (e.g., 'chelsa/global/climatologies/').
+    base_http : str
+        The base HTTP URL used to construct the virtual file system (vsi) 
+        path for the STAC Asset.
+
+    Returns
+    -------
+    list
+        A list of constructed `pystac.Item` objects containing the extracted 
+        metadata and spatial/temporal bounds for each file.
+    """
+    # Initialize an anonymous S3 client (CHELSA bucket is public)
+    s3_client = boto3.client(
+        's3', 
+        endpoint_url='https://os.unil.cloud.switch.ch', 
+        config=Config(signature_version=UNSIGNED)
+    )
+    paginator = s3_client.get_paginator('list_objects_v2')
+    
+    items = []
+    pages = paginator.paginate(Bucket='chelsa02', Prefix=prefix)
+    
+    # Global spatial extent applicable to all CHELSA planetary datasets
+    global_bbox = [-180.0, -90.0, 180.0, 90.0]
+    global_geometry = {
+        "type": "Polygon", 
+        "coordinates": [[
+            [-180.0, -90.0], [180.0, -90.0], [180.0, 90.0], 
+            [-180.0, 90.0], [-180.0, -90.0]
+        ]]
+    }
+
+    for page in pages:
+        if 'Contents' not in page: 
+            continue
+            
+        for obj in page['Contents']:
+            key = obj['Key']
+            
+            # Skip any auxiliary files, only process GeoTIFFs
+            if not key.endswith('.tif'): 
+                continue
+            
+            # =========================================================
+            # DIRECTORY & FILENAME PARSING
+            # =========================================================
+            parts = key.split('/')
+            filename = parts[-1]
+            
+            # Extract ONLY the directories to prevent grabbing the .tif filename
+            # as part of the nested model/scenario metadata.
+            folders = parts[:-1] 
+            
+            # Folder depth mappings: [bucket_root]/[domain]/[level]/[variable]/...
+            level = folders[2]
+            variable = folders[3]
+            
+            # Initialize default homogeneous STAC properties
+            properties = {
+                "chelsa:level": level,
+                "chelsa:variable": variable,
+                "chelsa:filename": filename,
+                "chelsa:time_range": None,
+                "chelsa:month": None,
+                "cmip6:model": "historical",     # Default fallback
+                "cmip6:scenario": "historical"   # Default fallback
+            }
+            
+            # =========================================================
+            # METADATA EXTRACTION BY FOLDER DEPTH
+            # =========================================================
+            if level in ['climatologies', 'bioclim']:
+                # Extract time_range, model, and scenario based on known folder depth
+                if len(folders) > 4:
+                    properties['chelsa:time_range'] = folders[4]
+                if len(folders) > 5:
+                    properties['cmip6:model'] = folders[5]
+                if len(folders) > 6:
+                    properties['cmip6:scenario'] = folders[6]
+                    
+                # Dynamic Month Scanning Engine for Climatologies
+                # Searches the filename for a valid 2-digit month (01-12)
+                if level == 'climatologies':
+                    file_parts = filename.replace('.tif', '').split('_')
+                    detected_month = None
+                    for part in file_parts:
+                        if part.isdigit() and len(part) == 2 and 1 <= int(part) <= 12:
+                            detected_month = int(part)
+                            break
+                    properties['chelsa:month'] = detected_month
+                    
+            elif level == 'monthly':
+                # Extract month strictly from the filename layout
+                file_parts = filename.replace('.tif', '').split('_')
+                try: 
+                    properties['chelsa:month'] = int(file_parts[2])
+                except (ValueError, IndexError): 
+                    pass
+
+            # =========================================================
+            # TEMPORAL (DATETIME) EXTRACTION
+            # =========================================================
+            file_parts = filename.replace('.tif', '').split('_')
+            
+            # Default fallback datetime for non-continuous projections
+            item_datetime = datetime(2000, 1, 1, tzinfo=timezone.utc)
+            
+            try:
+                if level == 'daily':
+                    day, month, year = file_parts[2], file_parts[3], file_parts[4]
+                    item_datetime = datetime(int(year), int(month), int(day), tzinfo=timezone.utc)
+                elif level == 'monthly':
+                    month, year = file_parts[2], file_parts[3]
+                    item_datetime = datetime(int(year), int(month), 1, tzinfo=timezone.utc)
+                elif level == 'annual':
+                    year = file_parts[2]
+                    item_datetime = datetime(int(year), 1, 1, tzinfo=timezone.utc)
+            except (ValueError, IndexError):
+                pass
+
+            # =========================================================
+            # PANDAS NANOSECOND BOUNDARY FIX
+            # Protects against OutOfBoundsDatetime errors in pyarrow if 
+            # dates precede year 1678.
+            # =========================================================
+            if item_datetime.year < 1678:
+                item_datetime = datetime(1981, 1, 1, tzinfo=timezone.utc)
+                
+            # Build the STAC Item
+            item = pystac.Item(
+                id=filename.replace('.tif', ''),
+                geometry=global_geometry,
+                bbox=global_bbox,
+                datetime=item_datetime,
+                properties=properties
+            )
+            
+            # Add the actual cloud-optimized GeoTIFF as a STAC Asset
+            item.add_asset(
+                variable, 
+                pystac.Asset(
+                    href=f"/vsicurl/{base_http}/{key}", 
+                    media_type=pystac.MediaType.COG, 
+                    roles=["data"]
+                )
+            )
+            items.append(item)
+            
+    print(f"Thread finished '{prefix}': Built {len(items)} items.")
+    return items
+
+
+def build_geoparquet_catalog(output_dir: str = "./chelsa_geoparquet") -> None:
+    """
+    Main orchestrator function that triggers multithreaded S3 scraping and 
+    compresses the resulting STAC memory objects into a single GeoParquet database.
+
+    Parameters
+    ----------
+    output_dir : str, optional
+        The local directory where the resulting `chelsa_master.parquet` file 
+        will be saved. Defaults to "./chelsa_geoparquet".
+        
+    Returns
+    -------
+    None
+    """
+    base_http = "https://os.unil.cloud.switch.ch/chelsa02"
+    os.makedirs(output_dir, exist_ok=True)
+    parquet_path = os.path.join(output_dir, "chelsa_master.parquet")
+    
+    # Core data categories corresponding to top-level folder prefixes
+    categories = ['daily', 'monthly', 'annual', 'climatologies', 'bioclim']
+    
+    all_items = []
+    print("Spinning up ThreadPoolExecutor for S3 pagination...")
+    
+    # Multithreaded S3 directory crawling to bypass sequential I/O bottlenecks
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = [
+            executor.submit(fetch_and_build_items, f"chelsa/global/{cat}/", base_http) 
+            for cat in categories
+        ]
+        
+        for future in as_completed(futures):
+            all_items.extend(future.result())
+
+    print(f"\nTotal items loaded into memory: {len(all_items)}")
+    
+    # Convert PySTAC objects back into raw dictionaries
+    print("Converting PySTAC items to dictionaries...")
+    item_dicts = [item.to_dict() for item in all_items]
+    
+    # Use stac-geoparquet to flatten the JSON structures into a Pandas/GeoPandas DataFrame
+    print("Flattening dictionaries into a GeoDataFrame...")
+    gdf = stac_geoparquet.to_geodataframe(item_dicts)
+    
+    # Save the DataFrame to disk as a highly compressed binary GeoParquet file
+    print(f"Compressing into a single GeoParquet database at: {parquet_path}...")
+    gdf.to_parquet(parquet_path)
+    
+    print("Complete!")
