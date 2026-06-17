@@ -91,9 +91,48 @@ class wekeo_lake(spatiotemporal_lake):
         "Fallow Land Presence": {0: "No fallow land", 1: "Fallow land present", 254: "Unclassifiable", 255: "No data"}
     }
     
-    def __init__(self):
+    def __init__(self, hdarc_path: str = "./hdarc"):
         super().__init__()
         self.wekeo_logger = None
+        self._load_credentials_to_memory(hdarc_path)
+
+    def _load_credentials_to_memory(self, filepath: str):
+        """Reads a local hdarc file and injects it into environment variables."""
+        if os.path.exists(filepath):
+            with open(filepath, 'r') as f:
+                lines = f.readlines()
+                for line in lines:
+                    if line.startswith('url:'):
+                        os.environ['HDA_URL'] = line.split('url:')[1].strip()
+                    elif line.startswith('user:'):
+                        os.environ['HDA_USER'] = line.split('user:')[1].strip()
+                    elif line.startswith('password:'):
+                        os.environ['HDA_PASSWORD'] = line.split('password:')[1].strip()
+            # --- VERIFICATION STEP ---
+            # Safely fetch the loaded variables
+            loaded_user = os.environ.get('HDA_USER')
+            loaded_pwd = os.environ.get('HDA_PASSWORD')
+            
+            # Create a masked password (e.g., "my_password" becomes "my***rd")
+            if loaded_pwd and len(loaded_pwd) > 4:
+                masked_pwd = f"{loaded_pwd[:2]}***{loaded_pwd[-2:]}"
+            else:
+                masked_pwd = "***"
+
+            # Print or log the confirmation
+            verification_msg = f"SUCCESS: WEkEO credentials loaded for user '{loaded_user}' (Password: {masked_pwd})"
+            
+            if self.wekeo_logger:
+                self.wekeo_logger.info(verification_msg)
+            else:
+                print(verification_msg)
+                
+        else:
+            warning_msg = f"WARNING: Could not find hdarc file at {filepath}"
+            if self.wekeo_logger:
+                self.wekeo_logger.warning(warning_msg)
+            else:
+                print(warning_msg)
 
     def fetch_raw_data(self, recipe: Dict[str, Any], logger: logging.Logger) -> Tuple[Any, List[Dict]]:
         """
@@ -388,7 +427,8 @@ class wekeo_lake(spatiotemporal_lake):
         """
         Crawls the finalized COGs and writes a STAC-compliant GeoParquet catalog.
         """
-        log_execution(logger, f"Generating cloud-native STAC GeoParquet catalog for lake at: {target_dir}", logging.INFO)    
+        log_execution(logger, f"Generating cloud-native STAC GeoParquet catalog for lake at: {target_dir}", logging.INFO)
+    
         base_path = Path(target_dir)
         catalog_records = []
         
