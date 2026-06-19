@@ -1,163 +1,207 @@
-from .chelsa import *
-from .gbif import *
-from xarray import DataTree
-from xarray import open_datatree
+from .chelsa import chelsa_cube
+from .wekeo import wekeo_cube
+from xarray import DataTree, open_datatree
 import xarray as xr
-import numpy as np
-import sparse
 import os
+import yaml
+import pandas as pd
 
-class bmd_cube(chelsa_cube, gbif_cube):
+class bmd_cube:
     def __init__(self):
-        super().__init__()
-        # Contains the names of the individual group which have been requested by the user
-        self.group_names = {"static":[], "dynamic":[]}
-        #self.group contains the individual layers which have been requested by the user 
-        self.groups = {"static":[], "dynamic":[]}
+        # A single dictionary to hold layers grouped by their source dataset
+        self.cube_data = {} 
         self.data_tree = None
-        self.cube_dir = None
-        self.cube_name = None
-
-    def _initialize_wekeo_client(self):
-        """Authenticates the WEkEO client using the .env file."""
         
-        print("Authenticating with WEkEO...")
-        wekeo_user = os.getenv("HDA_USER")
-        wekeo_pass = os.getenv("HDA_PASSWORD")
-        
-        if not wekeo_user or not wekeo_pass:
-            raise ValueError("Authentication failed: HDA_USER or HDA_PASSWORD missing from .env file!")
-            
-        self.wekeo_client = Client(user=wekeo_user, password=wekeo_pass)
-
-
-    def generate_bmd_data(self, param_file, param_path):
-        param_filepath = param_file if os.path.isabs(param_file) else os.path.join(param_path, param_file)
-        with open(param_filepath) as f:
-            param_dict = yaml.safe_load(f)
-        self.cube_dir = param_dict["cube_dir"]
-        self.cube_name = param_dict["cube_name"]
-        if param_dict["layers"]["chelsa"]["enabled"]:
-            chelsa_layer_names, chelsa_layer = self.generate_chelsa_cube(param_file, param_path)
-            for layer_name, layer in zip(chelsa_layer_names, chelsa_layer):
-                if layer_name=="chelsa_month":
-                    self.group_names["dynamic"].append(layer_name)
-                    self.groups["dynamic"].append(layer)
-                else:
-                    self.group_names["static"].append(layer_name)
-                    self.groups["static"].append(layer)
-        if param_dict["layers"]["gbif"]["enabled"]:
-            gbif_layer = self.construct_gbif_layer(param_file, param_path)
-            self.groups["dynamic"].append(gbif_layer.to_dataset(name="occurrences"))
-            self.group_names["dynamic"].append("gbif_occurences")
-        return None
-    
-    def construct_datatree(self) -> str:
-        # Assemble a fresh DataTree
-        self.data_tree = DataTree(name=self.cube_name)
-        
-        if self.groups.get("static"):
-            # Change 'data' to 'dataset'
-            static_nodes = [DataTree(dataset=ds, name=nm) for nm, ds in 
-                            zip(self.group_names["static"], self.groups["static"])]
-            
-            # In the new API, you can also assign children directly like a dictionary
-            self.data_tree["static"] = DataTree(name="static")
-            for node in static_nodes:
-                self.data_tree["static"][node.name] = node
-
-        if self.groups.get("dynamic"):
-            # Change 'data' to 'dataset'
-            dynamic_nodes = [DataTree(dataset=ds, name=nm) for nm, ds in 
-                            zip(self.group_names["dynamic"], self.groups["dynamic"])]
-            
-            self.data_tree["dynamic"] = DataTree(name="dynamic")
-            for node in dynamic_nodes:
-                self.data_tree["dynamic"][node.name] = node
-
-    def sparse_to_pseudodense(self,dataset, var_name):
-        """
-        Convert one sparse DataArray into a "pseudo‐dense" xr.Dataset, but
-        hang onto the original var_name so load_sparse never needs to be told.
-        """
-        sparse_data = dataset[var_name].data  # sparse.COO
-        
-        ds_sparse = xr.Dataset({
-            "coords": (("ndim", "nnz"), sparse_data.coords),
-            "data":   ("nnz", sparse_data.data),
-            "shape":  ("ndim", np.array(sparse_data.shape, dtype=np.int64)),
-            "dims":   ("ndim", list(dataset[var_name].dims)),
-        })
-
-        # copy over the real coordinate variables
-        for c in dataset[var_name].coords:
-            ds_sparse[c] = dataset[var_name].coords[c]
-
-        # save the original var name as a dataset attribute
-        ds_sparse.attrs["__orig_var_name__"] = var_name
-
-        #carry over any top‐level attrs
-        ds_sparse.attrs.update(dataset[var_name].attrs)
-        return ds_sparse
-
-    def load_sparse(self, ds_sparse: xr.Dataset) -> xr.Dataset:
-        """
-        Rebuild the sparse.COO from a pseudo‐dense dataset and return
-        a one‐variable xr.Dataset using the original var_name.
-        """
-        # pull back the components
-        coords = ds_sparse["coords"].values
-        data   = ds_sparse["data"].values
-        shape  = tuple(ds_sparse["shape"].values)
-        dims   = list(ds_sparse["dims"].values)
-
-        # rebuild sparse.COO
-        s = sparse.COO(coords, data, shape=shape)
-
-        # recover any real coords (e.g. time, x, y)
-        coord_vars = {
-            c: ds_sparse[c]
-            for c in ds_sparse.coords
-            if c not in ("coords", "data", "shape", "dims")
+        # Dispatch table mapping YAML keys to their respective class objects
+        self._source_map = {
+            "chelsa": chelsa_cube,
+            "wekeo": wekeo_cube
+            # "gbif": gbif_cube  <-- commented out until refactored
         }
 
-        # read the original var name from attrs
-        var_name = ds_sparse.attrs.get("__orig_var_name__", None)
-        if var_name is None:
-            raise KeyError("Dataset is missing the __orig_var_name__ attribute")
+    def _load_recipe(self, recipe_file, recipe_path):
+        """Private helper method to load and parse the YAML recipe."""
+        recipe_filepath = recipe_file if os.path.isabs(recipe_file) else os.path.join(recipe_path, recipe_file)
+        with open(recipe_filepath) as f:
+            return yaml.safe_load(f)
 
-        # build the DataArray
-        da = xr.DataArray(
-            s,
-            dims=dims,
-            coords=coord_vars,
-            name=var_name,
-            attrs={k: v for k, v in ds_sparse.attrs.items() if k != "__orig_var_name__"}
-        )
+    def generate_bmd_data(self, recipe_file, recipe_path):
+        recipe = self._load_recipe(recipe_file, recipe_path)
+        sources = recipe.get("sources", {})
 
-        # wrap back into a Dataset
-        return da.to_dataset()
+        base_dir = recipe.get("base_dir", ".")
+        if not os.path.exists(base_dir):
+            print(f"Notice: Destination directory '{base_dir}' not found. Creating path...")
+            os.makedirs(base_dir, exist_ok=True)
 
-    def export_tree(self):
-        #out_dir = os.path.join(self.cube_dir, self.cube_name)
-        os.makedirs(self.cube_dir, exist_ok=True)
-        #Make a copy of the datatree which will be written to the disc
+        # Dynamically iterate over the registered sources in our dispatch table
+        for source_name, cube_class in self._source_map.items():
+            
+            # Check if this specific source is present and enabled in the recipe
+            source_cfg = sources.get(source_name, {})
+            if source_cfg.get("enabled", False):
+                print(f"Initializing {source_name.upper()} cube generation...")
+                
+                # Instantiate the mapped class dynamically
+                cube_inst = cube_class()
+                
+                # process_cube returns a dictionary: Dict[str, xr.Dataset]
+                result_dict = cube_inst.process_cube(recipe)
+                
+                # Guard against empty dictionaries (e.g., if no assets matched the recipe constraints)
+                if not result_dict:
+                    print(f"Warning: {source_name.upper()} processing yielded no layers. Check logs for details.")
+                    continue
+                    
+                # Directly assign the returned dictionary to our source-specific branch
+                self.cube_data[source_name] = result_dict
+
+        return None
+    
+    def construct_datatree(self, recipe_file, recipe_path) -> None:
+        recipe = self._load_recipe(recipe_file, recipe_path)
+        cube_name = recipe.get("cube_name", "bmd_default_cube")
+        
+        # Assemble a fresh DataTree
+        self.data_tree = DataTree(name=cube_name)
+        
+        # Iterate over our source dictionaries (the new branches)
+        for source_name, layers in self.cube_data.items():
+            
+            # Create a dedicated branch for the data source
+            self.data_tree[source_name] = DataTree(name=source_name)
+            
+            # Attach individual layers as leaves to this branch
+            for layer_name, ds in layers.items():
+                node = DataTree(dataset=ds, name=layer_name)
+                self.data_tree[source_name][layer_name] = node
+
+    def export_tree(self, recipe_file, recipe_path):
+        recipe = self._load_recipe(recipe_file, recipe_path)
+        
+        # Extract base properties dynamically
+        base_dir = recipe.get("base_dir", ".")
+        cube_name = recipe.get("cube_name", "bmd_default_cube")
+        export_cfg = recipe.get("export", {})
+        
+        as_tree = export_cfg.get("as_tree", False)
+        as_nested_dir = export_cfg.get("as_nested_dir", True)
+
         if not self.data_tree:
             raise ValueError("self.data_tree is empty, please use the self.construct_datatree method to build a tree")
-        dt_copy = DataTree.copy(self.data_tree)
-        #Iterate over the branches in the tree
-        for branch in dt_copy:
-            #iterate over the different leafs in the tree
-            for leaf in dt_copy[branch]:
-                #request the name of each data variable and data array
-                for name, da, in dt_copy[branch][leaf].ds.data_vars.items():
-                    #check if the data array contains data in the sparse representation
-                    if isinstance(da.data, sparse.COO):
-                        #convert the sparse data to a pseudo dense format that can be saved without complete densification
-                        dt_copy[branch][leaf].ds = self.sparse_to_pseudodense(dt_copy[branch][leaf].ds, name)
-        dt_copy.to_netcdf(os.path.join(self.cube_dir, f"{self.cube_name}.nc"), format="NETCDF4")
-        return None        
 
+        # =================================================================
+        # PRE-PROCESSING: Strip MultiIndexes for NetCDF Compatibility
+        # NetCDF cannot serialize pandas MultiIndex objects natively.
+        # We must reset them to standard 1D auxiliary coordinate arrays.
+        # =================================================================
+        for branch in self.data_tree:
+            for leaf in self.data_tree[branch]:
+                ds = self.data_tree[branch][leaf].ds
+                
+                # Dynamically find any dimension that is a pandas MultiIndex
+                m_indexes = [
+                    dim for dim, idx in ds.indexes.items() 
+                    if isinstance(idx, pd.MultiIndex)
+                ]
+                
+                if m_indexes:
+                    # reset_index flattens the MultiIndex back to standard coordinates
+                    self.data_tree[branch][leaf].ds = ds.reset_index(m_indexes)
+
+        # =================================================================
+        # EXPORT ROUTINES
+        # =================================================================
+        
+        # Export as a single DataTree NetCDF
+        if as_tree:
+            os.makedirs(base_dir, exist_ok=True)
+            file_path = os.path.join(base_dir, f"{cube_name}.nc")
+            self.data_tree.to_netcdf(file_path, format="NETCDF4")
+            print(f"Exported DataTree to single file: {file_path}")
+
+        # Export as a nested directory structure
+        if as_nested_dir:
+            cube_folder = os.path.join(base_dir, cube_name)
+            os.makedirs(cube_folder, exist_ok=True)
+            
+            # Iterate over branches (e.g., 'chelsa', 'wekeo')
+            for branch in self.data_tree:
+                branch_dir = os.path.join(cube_folder, branch)
+                os.makedirs(branch_dir, exist_ok=True)
+                
+                # Iterate over leaves (the individual xarray datasets)
+                for leaf in self.data_tree[branch]:
+                    leaf_file_path = os.path.join(branch_dir, f"{leaf}.nc")
+                    self.data_tree[branch][leaf].ds.to_netcdf(leaf_file_path, format="NETCDF4")
+            print(f"Exported DataTree to nested directory: {cube_folder}")
+
+        return None      
+
+    def import_tree(self, target_path: str):
+        """
+        Imports the DataTree directly from a path. Automatically detects whether 
+        the target is a single NetCDF file or a nested directory structure, 
+        and restores any flattened MultiIndexes.
+        """
+        if not os.path.exists(target_path):
+            raise FileNotFoundError(f"The specified path does not exist: {target_path}")
+
+        # =================================================================
+        # 1. IMPORT ROUTINES
+        # =================================================================
+        if os.path.isfile(target_path) and target_path.endswith(".nc"):
+            self.data_tree = open_datatree(target_path, format="NETCDF4")
+            print(f"Imported DataTree from single file: {target_path}")
+            
+        elif os.path.isdir(target_path):
+            cube_name = os.path.basename(os.path.normpath(target_path))
+            self.data_tree = DataTree(name=cube_name)
+            
+            for branch in sorted(os.listdir(target_path)):
+                branch_path = os.path.join(target_path, branch)
+                if not os.path.isdir(branch_path):
+                    continue
+                
+                self.data_tree[branch] = DataTree(name=branch)
+                
+                for leaf_file in sorted(os.listdir(branch_path)):
+                    if leaf_file.endswith(".nc"):
+                        leaf_name = leaf_file.replace(".nc", "")
+                        leaf_path = os.path.join(branch_path, leaf_file)
+                        
+                        ds = xr.open_dataset(leaf_path, engine="netcdf4")
+                        self.data_tree[branch][leaf_name] = DataTree(name=leaf_name, dataset=ds)
+                        
+            print(f"Imported DataTree from nested directory: {target_path}")
+            
+        else:
+            raise ValueError("Target path must be either a .nc file or a valid directory.")
+
+        # =================================================================
+        # 2. POST-PROCESSING: Restore MultiIndexes
+        # Automatically detects 1D auxiliary coordinates mapped to the 
+        # 'projection' dimension and zips them back into a MultiIndex.
+        # =================================================================
+        for branch in self.data_tree:
+            for leaf in self.data_tree[branch]:
+                ds = self.data_tree[branch][leaf].ds
+                
+                # Check if this specific dataset uses the 'projection' framework
+                if 'projection' in ds.dims:
+                    
+                    # Dynamically find all 1D coordinates that belong solely to 'projection'
+                    multi_coords = [
+                        coord_name for coord_name, coord_da in ds.coords.items()
+                        if list(coord_da.dims) == ['projection'] and coord_name != 'projection'
+                    ]
+                    
+                    # If we found auxiliary coordinates, rebuild the MultiIndex!
+                    if multi_coords:
+                        self.data_tree[branch][leaf].ds = ds.set_index(projection=multi_coords)
+
+        return self.data_tree
+    """
     def import_tree(self, cube_dir, cube_name):
         cube_filepath = os.path.join(cube_dir, cube_name)
         self.data_tree = open_datatree(cube_filepath, format="NETCDF4")
@@ -168,7 +212,6 @@ class bmd_cube(chelsa_cube, gbif_cube):
                         self.data_tree[branch][leaf].ds = self.load_sparse(self.data_tree[branch][leaf].ds)
         return self.data_tree
 
-    """
     Currently we will focus on using the data tree in the prototype endproduct
 
     def export_group(self):

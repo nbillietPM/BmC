@@ -352,6 +352,7 @@ class spatiotemporal_cube(spatial_engine, ABC):
         target_grid_key = self.resolve_target_grid(spatial_cfg, logger)
         grid_info = self.GRID_REGISTRY[target_grid_key]
         target_crs = grid_info["crs"]
+        target_res = grid_info["resolution"]
         
         # 3. Calculate Rectangular Bounds
         bbox_cfg = spatial_cfg.get('bbox', {})
@@ -362,6 +363,12 @@ class spatiotemporal_cube(spatial_engine, ABC):
             max(bbox_cfg.get('lat_min', 0), bbox_cfg.get('lat_max', 0))
         )
         target_bounds = transform_bounds("EPSG:4326", target_crs, *wgs84_bounds)
+
+        log_execution(logger, f"\n--- Target Spatial Framework Initialized ---", logging.INFO)
+        log_execution(logger, f"  Master Grid : {target_grid_key} ({target_crs})", logging.INFO)
+        log_execution(logger, f"  Resolution  : {target_res} (Native CRS Units)", logging.INFO)
+        log_execution(logger, f"  WGS84 Bounds: [MinLon: {wgs84_bounds[0]:.4f}, MinLat: {wgs84_bounds[1]:.4f}, MaxLon: {wgs84_bounds[2]:.4f}, MaxLat: {wgs84_bounds[3]:.4f}]", logging.INFO)
+        log_execution(logger, f"  Proj Bounds : [MinX: {target_bounds[0]:.2f}, MinY: {target_bounds[1]:.2f}, MaxX: {target_bounds[2]:.2f}, MaxY: {target_bounds[3]:.2f}]\n", logging.INFO)
 
         # 4. Fetch the Data
         sample_file_path = execution_plan.iloc[0]['vsi_path']

@@ -1,32 +1,28 @@
 base_dir: "./test_outputs/"
-cube_name: "micro_lake_2"
+cube_name: "dev_cube"
+
+export:
+  as_tree: true
+  as_nested_dir: true 
 
 # ======================================================================
 # 1. SPATIAL & TEMPORAL SELECTION
 # ======================================================================
 spatial:
   target_grid: "EEA"
-  target_resolution: "500m"
+  target_resolution: "10km"
   use_bbox: true  
   bbox:
-      long_min: 4.24
-      long_max: 4.48
-      lat_min: 50.76
-      lat_max: 50.91
+      long_min: 2.457939
+      long_max: 6.521787
+      lat_min: 48.381926
+      lat_max: 51.963900
 
 temporal:
   start_year: 2018
   start_month: 1
   end_year: 2019
   end_month: 2
-
-resampling:
-  continuous: 
-    - "average"
-    - "max"
-    - "min"
-    - "rms"
-  discrete: "coverage" 
 
 # ======================================================================
 # 2. DATA SOURCES
@@ -36,7 +32,7 @@ sources:
   # WEkEO DATASETS (Copernicus Land Monitoring Service)
   # --------------------------------------------------------------------
   wekeo:
-    enabled: true
+    enabled: false
     dataset_resolution: "250m" # Fetches the finest raw data before upscaling/downscaling
     catalog_path: 
     # ------------------------------------------------------------------
@@ -55,7 +51,6 @@ sources:
     # DATA INVENTORY (Grouped by GeoParquet 'collection' Keys)
     # ------------------------------------------------------------------
     categories:
-      
       # --- Tree Cover & Forest (TCF) ---
       TCF:
         include: true
@@ -299,8 +294,8 @@ sources:
   # --------------------------------------------------------------------
   chelsa:
     enabled: true
-    levels:
-    catalog_path: 
+    catalog_path:  "C:/Users/niels/Documents/Repositories/BmC/meta/chelsa_gp_stac/chelsa_master.parquet"
+    levels: 
       # --- DAILY TIME SERIES (Inherits global 'temporal' block) ---
       daily:
         include: true

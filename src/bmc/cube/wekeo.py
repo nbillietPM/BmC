@@ -3,6 +3,8 @@ import xarray as xr
 import logging
 from typing import Dict, Any, Tuple, Optional
 import os
+from hda import Client
+
 
 from bmc.cube.spatiotemporal import spatiotemporal_cube
 from bmc.utils.logger import log_execution
@@ -53,6 +55,18 @@ class wekeo_cube(spatiotemporal_cube):
     """
     def __init__(self):
         super().__init__()
+
+    def _initialize_wekeo_client(self):
+        """Authenticates the WEkEO client using the .env file."""
+        
+        print("Authenticating with WEkEO...")
+        wekeo_user = os.getenv("HDA_USER")
+        wekeo_pass = os.getenv("HDA_PASSWORD")
+        
+        if not wekeo_user or not wekeo_pass:
+            raise ValueError("Authentication failed: HDA_USER or HDA_PASSWORD missing from .env file!")
+            
+        self.wekeo_client = Client(user=wekeo_user, password=wekeo_pass)
 
     def generate_execution_plan(
         self,

@@ -93,8 +93,8 @@ class chelsa_cube(spatiotemporal_cube):
         logger: Optional[logging.Logger] = None
     ) -> str:
         """
-        Intersects target spatial configurations to override fine resolutions, locking 
-        execution strictly to the equivalent native ~1km grid framework from GRID_REGISTRY.
+        Intersects target spatial configurations to enforce a minimum atmospheric 
+        resolution of ~1km, while allowing coarser user requests (e.g., 10km) to pass.
 
         Parameters
         ----------
@@ -108,53 +108,57 @@ class chelsa_cube(spatiotemporal_cube):
         str
             The specific, validated target grid key matching `GRID_REGISTRY`.
         """
-        # Log the beginning of the target grid evaluation sequence
         log_execution(logger, "Resolving target grid base for CHELSA data cube generation...", logging.INFO)
         
-        # Extract the user's requested grid from the config, defaulting to 'EEA', and convert to uppercase
-        grid_base = str(spatial_cfg.get('target_grid', 'EEA')).upper()
-        
-        # Check if the requested grid is the European Environment Agency metric grid
-        if grid_base == "EEA":
-            # Force the resolution down to the 1km equivalent to match CHELSA's native scale
-            resolved_grid = "EEA_1km"
-            
-        # Check if the requested grid is the Global Equal Area metric grid
-        elif grid_base in ["GEA", "GLOBAL_EQUALAREA", "GLOBAL_EQUAL_AREA"]:
-            # Force the resolution down to the 1km equivalent
-            resolved_grid = "Global_EqualArea_1km"
-            
-        # Check if the requested grid is the standard global geographic degrees grid
-        elif grid_base in ["WGS84", "GLOBAL_WGS84"]:
-            # Force the resolution down to 30 arc-seconds (~1km at the equator)
-            resolved_grid = "Global_WGS84_30sec"
-            
-        # If the requested grid string does not match standard shorthands, attempt a dynamic registry search
+        # Extract user requests
+        raw_grid = str(spatial_cfg.get('target_grid', 'EEA'))
+        raw_res = str(spatial_cfg.get('target_resolution', '1km'))
+        grid_base_upper = raw_grid.upper()
+
+        # 1. Standardize the base grid names
+        if grid_base_upper == "EEA":
+            clean_base = "EEA"
+            default_1km_res = "1km"
+        elif grid_base_upper in ["GEA", "GLOBAL_EQUALAREA", "GLOBAL_EQUAL_AREA"]:
+            clean_base = "Global_EqualArea"
+            default_1km_res = "1km"
+        elif grid_base_upper in ["WGS84", "GLOBAL_WGS84"]:
+            clean_base = "Global_WGS84"
+            default_1km_res = "30sec"
         else:
-            # Set a safe default fallback in case the dynamic search fails
-            resolved_grid = "EEA_1km"
-            
-            # Loop through all available keys in the parent class's GRID_REGISTRY
-            for key in self.GRID_REGISTRY.keys():
-                # Check if the user's base string exists in the key AND it represents a 1km/30sec scale
-                if grid_base in key.upper() and ("1KM" in key.upper() or "30SEC" in key.upper()):
-                    # Assign the exact registry key string and break the search loop
-                    resolved_grid = key
-                    break
-                    
-            # Log a warning that the specific user grid was overridden to protect memory bounds
+            clean_base = raw_grid 
+            default_1km_res = "1km"
+
+        # 2. Check the mathematical resolution limit
+        res_in_meters = self._parse_res_to_meters(raw_res)
+        
+        if res_in_meters < 1000.0:
             log_execution(
                 logger, 
-                f"Unrecognized target grid base '{grid_base}'. Applying registry fallback: '{resolved_grid}'.", 
+                f"Requested resolution '{raw_res}' is too fine for native CHELSA atmospheric data. Clamping to '{default_1km_res}'.", 
                 logging.WARNING
             )
-            # Return the dynamically found fallback grid
-            return resolved_grid
+            final_res = default_1km_res
+        else:
+            final_res = raw_res
 
-        # Log confirmation of the successfully resolved 1km equivalent grid
-        log_execution(logger, f"Enforcing native atmospheric scale: mapped to registry grid '{resolved_grid}'.", logging.INFO)
+        # 3. Construct and validate the final master key
+        resolved_grid = f"{clean_base}_{final_res}"
+
+        if resolved_grid not in self.GRID_REGISTRY:
+            fallback = f"{clean_base}_{default_1km_res}"
+            if fallback not in self.GRID_REGISTRY:
+                fallback = "EEA_1km" # Absolute safety net
+            
+            log_execution(
+                logger, 
+                f"Constructed grid '{resolved_grid}' does not exist in registry. Falling back to safe default: '{fallback}'.", 
+                logging.WARNING
+            )
+            resolved_grid = fallback
+        else:
+            log_execution(logger, f"Successfully mapped CHELSA processing to registry grid '{resolved_grid}'.", logging.INFO)
         
-        # Return the resolved grid key string
         return resolved_grid
 
     def generate_execution_plan(
