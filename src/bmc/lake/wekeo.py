@@ -161,6 +161,10 @@ class wekeo_lake(spatiotemporal_lake):
         """
         Executes the queue: Downloads zips, extracts TIFs, builds VRTs, and bakes COGs.
         """
+        # --- 1. INITIALIZE THE DASK MULTI-CORE CLUSTER HERE ---
+        cluster = LocalCluster(n_workers=os.cpu_count(), threads_per_worker=1, memory_limit='auto')
+        client = Client(cluster)
+
         raw_dir = recipe.get("paths", {}).get("raw_dir", "./raw_wekeo")
         base_dir = recipe.get("paths", {}).get("base_dir", "./wekeo_lake")
         lake_name = recipe.get("lake_name", "defaultWekeoLake")
@@ -168,6 +172,8 @@ class wekeo_lake(spatiotemporal_lake):
         wekeo_config = recipe.get("sources", {}).get("wekeo", {})
         if not wekeo_config.get("enabled", False):
             log_execution(logger, "WEkEO lake generation is disabled.", logging.INFO)
+            client.close()
+            cluster.close()
             return []
 
         if logger is None:
@@ -255,6 +261,10 @@ class wekeo_lake(spatiotemporal_lake):
 
         # Clean raw downloads if configured
         self.cleanup_raw_storage(recipe=recipe, logger=logger)
+
+        client.close()
+        cluster.close()
+
         return generated_cogs
 
     def validate_datalake(

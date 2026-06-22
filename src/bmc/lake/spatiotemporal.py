@@ -18,6 +18,7 @@ import xarray as xr
 import pandas as pd
 import rioxarray
 from osgeo import gdal
+from dask.distributed import Client, LocalCluster
 
 from bmc.utils.spatial import build_envelope_from_file
 from bmc.utils.io import parallel_fetch_rasters
@@ -27,7 +28,7 @@ from bmc.engine.spatial import spatial_engine
 
 
 class spatiotemporal_lake(spatial_engine, ABC):
-
+ 
     def export_to_cog(
         self, 
         ds: Union[xr.DataArray, xr.Dataset], 
@@ -37,12 +38,12 @@ class spatiotemporal_lake(spatial_engine, ABC):
     ) -> str:
         """
         Exports an xarray object to disk as a Cloud Optimized GeoTIFF (COG).
+        Uses a two-step multi-threaded process to avoid Dask single-core bottlenecks.
 
         Parameters
         ----------
         ds : xarray.DataArray or xarray.Dataset
-            The spatial data to be exported. If a Dataset is provided, it iterates 
-            and saves each variable as a separate COG (or bands, depending on structure).
+            The spatial data to be exported.
         output_filepath : str
             The target file path (must end in .tif).
         compress_mode : str, optional
@@ -59,36 +60,51 @@ class spatiotemporal_lake(spatial_engine, ABC):
         
         # Ensure the directory exists
         os.makedirs(os.path.dirname(os.path.abspath(output_filepath)), exist_ok=True)
+        
+        # 1. Define a temporary standard GTiff path
+        base_name, ext = os.path.splitext(output_filepath)
+        temp_tif = f"{base_name}_temp_streaming{ext}"
 
         try:
-            # rioxarray has native support for the GDAL COG driver
-            if isinstance(ds, xr.Dataset):
-                # For datasets (like fractional coverages), we can write them out 
-                # as multi-band COGs or iteratively. rioxarray handles Datasets by 
-                # writing each data_var as a band if they share coordinates.
-                ds.rio.to_raster(
-                    output_filepath,
-                    driver="COG",
-                    compress=compress_mode,
-                    tiled=True,
-                    windowed=True # Crucial for keeping RAM usage low during write
-                )
-            else:
-                ds.rio.to_raster(
-                    output_filepath,
-                    driver="COG",
-                    compress=compress_mode,
-                    tiled=True,
-                    windowed=True
-                )
+            # 2. Stream Dask chunks to a standard tiled GTiff (Fast & Multi-core friendly)
+            ds.rio.to_raster(
+                temp_tif,
+                driver="GTiff",
+                compress=compress_mode,
+                tiled=True,
+                windowed=True
+            )
             
-            log_execution(logger, f"COG successfully generated.", logging.INFO)
+            log_execution(logger, "Temporary GTiff stream complete. Building COG pyramids across all cores...", logging.INFO)
+
+            # 3. Use GDAL C++ bindings to aggressively build the COG using all available CPU threads
+            gdal.UseExceptions()
+            gdal.Translate(
+                output_filepath, 
+                temp_tif, 
+                format="COG", 
+                creationOptions=[
+                    f"COMPRESS={compress_mode.upper()}", 
+                    "NUM_THREADS=ALL_CPUS",
+                    "BIGTIFF=YES"  # Safety net for massive continent-wide mosaics
+                ]
+            )
+            
+            log_execution(logger, "COG successfully generated.", logging.INFO)
             return output_filepath
 
         except Exception as e:
             log_execution(logger, f"Failed to export COG: {e}", logging.ERROR, exc_info=True)
             raise
- 
+            
+        finally:
+            # 4. Always clean up the temporary physical file to save disk space
+            if os.path.exists(temp_tif):
+                try:
+                    os.remove(temp_tif)
+                except OSError as cleanup_error:
+                    log_execution(logger, f"Warning: Could not delete temporary file {temp_tif}: {cleanup_error}", logging.WARNING)
+
     def gather_tifs_from_zips(
         self, 
         source_directory: str, 
