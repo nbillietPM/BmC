@@ -6,7 +6,7 @@ import itertools
 from functools import lru_cache
 import shapely
 import json
-from utils import credentials
+from bmc.utils import credentials
 import time 
 
 def read_species_names(inpFile, inpPath="", sep=","):
