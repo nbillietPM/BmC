@@ -8,10 +8,16 @@ import gc
 import yaml
 import sys
 import os
+import tempfile
 import shutil
 import zipfile
 import glob
 from pathlib import Path
+
+os.environ["GDAL_CACHEMAX"] = "1024"      # Give GDAL 1GB of RAM for caching
+os.environ["GDAL_NUM_THREADS"] = "ALL_CPUS" # Unleash multi-threading
+os.environ["VSI_CACHE"] = "TRUE"          # Optimize virtual file reading
+os.environ["GDAL_DISABLE_READDIR_ON_OPEN"] = "EMPTY_DIR" # Speeds up file discovery
 
 import numpy as np
 import xarray as xr
@@ -216,30 +222,59 @@ class spatiotemporal_lake(spatial_engine, ABC):
             if logger:
                 logger.info("keep_raw is True. Retaining raw downloaded data.")
 
-    def build_fractional_cogs(self, ds, grid_name, output_dir, class_values, logger, file_prefix="fractional", class_mapping=None):
-            """
-            Lake Orchestrator: Iterates classes, computes fractions, and bakes COGs.
-            """
-            for cls in class_values:
-                cls_int = int(cls)
-                
-                # Map the integer to a human-readable name if available
-                if class_mapping and cls_int in class_mapping:
-                    cls_name = str(class_mapping[cls_int]).replace(" ", "_").replace("/", "_").replace("-", "_")
-                else:
-                    cls_name = f"class_{cls_int}"
+    def build_fractional_cogs(self, source_path: str, grid_name, output_dir, class_values, logger, file_prefix="fractional", class_mapping=None):
+        """
+        Lake Orchestrator: Iterates classes, computes fractions to disk, and bakes COGs directly.
+        """
+        for cls in class_values:
+            cls_int = int(cls)
+            
+            if class_mapping and cls_int in class_mapping:
+                cls_name = str(class_mapping[cls_int]).replace(" ", "_").replace("/", "_").replace("-", "_")
+            else:
+                cls_name = f"class_{cls_int}"
 
-                # 1. Ask the engine to do the math
-                frac_da = self.compute_class_fraction(ds, cls_int, grid_name, logger)
+            # 1. Create a safe physical temp file on the hard drive
+            fd, temp_path = tempfile.mkstemp(suffix=".tif", prefix="temp_frac_")
+            os.close(fd) 
+
+            final_cog_path = os.path.join(output_dir, f"{file_prefix}_{cls_name}.tif")
+
+            try:
+                if logger:
+                    logger.info(f"Processing spatial math for class: {cls_name}")
                 
-                # 2. Handle the I/O
-                final_cog_path = os.path.join(output_dir, f"{file_prefix}_{cls_name}.tif")
-                self.export_to_cog(frac_da, final_cog_path, logger)
+                # 2. Hand the VRT string path down to the pure rasterio/GDAL math primitive
+                self.compute_class_fraction(source_path, cls_int, grid_name, temp_path, logger)
                 
-                # 3. Clean up RAM
-                frac_da.close()
-                del frac_da
-                gc.collect()
+                # 3. Use GDAL C++ bindings to aggressively build the COG directly from the temp file
+                gdal.UseExceptions()
+                gdal.Translate(
+                    final_cog_path, 
+                    temp_path, 
+                    format="COG", 
+                    creationOptions=[
+                        "COMPRESS=DEFLATE", 
+                        "NUM_THREADS=ALL_CPUS",
+                        "BIGTIFF=YES"
+                    ]
+                )
+                
+                if logger:
+                    logger.info(f"Successfully baked COG: {final_cog_path}")
+
+            except Exception as e:
+                if logger:
+                    logger.error(f"Pipeline failure on class {cls_name}: {e}", exc_info=True)
+                raise
+            finally:
+                # 4. Clean up the physical file
+                if os.path.exists(temp_path):
+                    try:
+                        os.remove(temp_path)
+                    except OSError as e:
+                        if logger:
+                            logger.warning(f"Could not delete temp file {temp_path}: {e}")
 
     def build_virtual_mosaic(
         self,
@@ -294,6 +329,7 @@ class spatiotemporal_lake(spatial_engine, ABC):
             log_execution(logger, f"Error building virtual mosaic: {e}", logging.ERROR, exc_info=True)
             raise
 
+        
     def process_virtual_mosaic(
         self, 
         vrt_path: str, 
@@ -350,21 +386,13 @@ class spatiotemporal_lake(spatial_engine, ABC):
                 )
                 
             elif strategy.lower() == 'coverage':
-                # Safely extract kwargs specific to categorical processing
                 target_classes = kwargs.get('class_values', [])
                 file_prefix = kwargs.get('file_prefix', 'fractional')
                 class_mapping = kwargs.get('class_mapping', None)
                 
-                # FIX: Open the VRT blueprint as a chunked DataArray
-                import rioxarray
-                opened_ds = rioxarray.open_rasterio(
-                    vrt_path, 
-                    masked=True, 
-                    chunks={'x': 2048, 'y': 2048}
-                ).squeeze()
-                
+                # Pass the physical string path directly, avoiding Dask and RAM overhead entirely.
                 self.build_fractional_cogs(
-                    ds=opened_ds, # Pass the opened spatial array, not the string path
+                    source_path=vrt_path, 
                     grid_name=grid_name, 
                     output_dir=output_dir_or_file, 
                     class_values=target_classes, 

@@ -3,6 +3,7 @@ import sys
 import glob
 import gc
 from pathlib import Path
+import tempfile
 
 import logging
 from typing import Optional, Union, Dict, Any, List, Tuple
@@ -15,6 +16,7 @@ import rioxarray
 from osgeo import gdal
 import uuid
 from pyproj import CRS, Transformer
+import rasterio
 from rasterio.warp import transform_bounds
 from rasterio.transform import from_origin
 from rasterio.enums import Resampling
@@ -763,44 +765,103 @@ class spatial_engine():
     
     def compute_class_fraction(
         self, 
-        da: xr.DataArray, 
+        source_data: Union[str, xr.DataArray], 
         class_value: int, 
         grid_name: str, 
+        output_filepath: str, 
         logger: Optional[logging.Logger] = None
-    ) -> xr.DataArray:
+    ) -> str:
         """
-        Pure spatial math primitive: Isolates a single class from a categorical 
-        raster and calculates its continuous fractional coverage on a target grid.
-        No disk I/O occurs here other than GDAL's temporary warp buffering.
+        Pure spatial math primitive: Isolates a single class and writes its fractional coverage.
+        Automatically routes large disk-based VRTs to pure GDAL streaming, 
+        and small in-memory xarray DataArrays to native xarray math.
         """
-        nodata_val = da.rio.nodata
-
-        # 1. Create the Binary Mask
-        mask = (da == class_value).astype(np.float32)
-        if nodata_val is not None:
-            mask = mask.where(da != nodata_val, np.nan)
+        import os
+        import tempfile
+        import numpy as np
+        from bmc.utils.logger import log_execution
         
-        mask.rio.write_crs(da.rio.crs, inplace=True)
-        mask.rio.write_transform(da.rio.transform(), inplace=True)
-        mask.rio.write_nodata(np.nan, inplace=True)
+        # =====================================================================
+        # BRANCH 1: IN-MEMORY XARRAY (For Small Datasets)
+        # =====================================================================
+        if isinstance(source_data, xr.DataArray):
+            log_execution(logger, f"Processing small DataArray for class {class_value} in RAM...", logging.INFO)
+            
+            nodata_val = source_data.rio.nodata
+            
+            # 1. Create the Binary Mask in RAM
+            mask = (source_data == class_value).astype(np.float32)
+            if nodata_val is not None:
+                mask = mask.where(source_data != nodata_val, np.nan)
+            
+            mask.rio.write_crs(source_data.rio.crs, inplace=True)
+            mask.rio.write_transform(source_data.rio.transform(), inplace=True)
+            mask.rio.write_nodata(np.nan, inplace=True)
 
-        # Create a unique virtual file path to prevent thread collisions
-        vsimem_path = f"/vsimem/temp_frac_{uuid.uuid4().hex}.tif"
+            # 2. Route straight to affine_reproject (handles the small I/O dump safely)
+            self.affine_reproject(
+                input_data=mask, 
+                output_filepath=output_filepath,  
+                grid_name=grid_name, 
+                resample_keyword="average",
+                logger=logger
+            )
+            return output_filepath
 
-        # Warp using the 'average' rule to calculate volume-conserving fractions
-        frac_da = self.affine_reproject(
-            input_data=mask, 
-            output_filepath=vsimem_path,  
-            grid_name=grid_name, 
-            resample_keyword="average",
-            logger=logger
-        )
+        # =====================================================================
+        # BRANCH 2: PURE GDAL STREAMING (For Massive VRTs)
+        # =====================================================================
+        elif isinstance(source_data, str):
+            import rasterio
+            
+            # 1. Create a safe physical temp file for the raw un-warped mask
+            fd, temp_mask_path = tempfile.mkstemp(suffix=".tif", prefix="raw_mask_")
+            os.close(fd)
 
-        # Force xarray to load the data into standard Python RAM
-        frac_da.load()
+            try:
+                log_execution(logger, f"Streaming VRT blocks to calculate mask for class {class_value}...", logging.INFO)
+                
+                # 2. Stream the VRT directly using GDAL/Rasterio blocks (Zero Dask Overhead)
+                # 2. Stream the VRT directly using GDAL/Rasterio blocks (Zero Dask Overhead)
+                with rasterio.open(source_data) as src:
+                    meta = src.meta.copy()
+                    meta.update({
+                        "driver": "GTiff",  # <--- FORCE STANDARD GEOTIFF INSTEAD OF VRT
+                        "dtype": "float32",
+                        "nodata": np.nan,
+                        "compress": "lzw",
+                        "tiled": True,
+                        "blockxsize": 2048,
+                        "blockysize": 2048
+                    })
 
-        # Explicitly delete the file from GDAL's C++ memory heap
-        gdal.Unlink(vsimem_path)
-
-        return frac_da.squeeze().drop_vars("band", errors="ignore")
-    
+                    with rasterio.open(temp_mask_path, "w", **meta) as dst:
+                        for ji, window in src.block_windows(1):
+                            block = src.read(1, window=window)
+                            mask = (block == class_value).astype(np.float32)
+                            
+                            if src.nodata is not None:
+                                mask[block == src.nodata] = np.nan
+                                
+                            dst.write(mask, 1, window=window)
+                            
+                # 3. Hand the physical mask directly to your robust GDAL C++ affine_reproject
+                self.affine_reproject(
+                    input_data=temp_mask_path, 
+                    output_filepath=output_filepath,  
+                    grid_name=grid_name, 
+                    resample_keyword="average",
+                    logger=logger
+                )
+            finally:
+                # 4. Clean up the pre-warp mask file
+                if os.path.exists(temp_mask_path):
+                    try:
+                        os.remove(temp_mask_path)
+                    except OSError as e:
+                        log_execution(logger, f"Warning: Could not delete temp mask {temp_mask_path}: {e}", logging.WARNING)
+                        
+            return output_filepath
+        
+        else:
+            raise TypeError("source_data must be either a string path (for VRTs) or an xarray.DataArray")

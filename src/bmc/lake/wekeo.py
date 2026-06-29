@@ -6,9 +6,15 @@ import urllib
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 
+os.environ["GDAL_CACHEMAX"] = "1024"      # Give GDAL 1GB of RAM for caching
+os.environ["GDAL_NUM_THREADS"] = "ALL_CPUS" # Unleash multi-threading
+os.environ["VSI_CACHE"] = "TRUE"          # Optimize virtual file reading
+os.environ["GDAL_DISABLE_READDIR_ON_OPEN"] = "EMPTY_DIR" # Speeds up file discovery
+
 import pandas as pd
 import xarray as xr
 import rioxarray
+from dask.distributed import LocalCluster, Client
 
 import hda 
 
@@ -590,35 +596,49 @@ class wekeo_lake(spatiotemporal_lake):
         """
         if not logger:
             logger = self.wekeo_logger
-        # Extract the id from the query
+            
         dataset_id = wekeo_query.get("dataset_id", "UNKNOWN_DATASET")
         log_execution(logger, f"===={dataset_id}====", logging.INFO)
     
         pretty_query = json.dumps(wekeo_query, indent=4)
         indented_block = "\n    " + pretty_query.replace("\n", "\n    ")
         log_execution(logger, f"Executing search query...{indented_block}", logging.INFO)
-        # Get all matches from the query
+        
+        # Execute the search query
         response = wekeo_client.search(wekeo_query)
         
         # Check if response has results or is fundamentally empty
         try:
-            is_empty = not response or len(getattr(response, 'results', [])) == 0
+            results = getattr(response, 'results', [])
+            is_empty = not response or len(results) == 0
         except Exception:
-            is_empty = False 
+            results = []
+            is_empty = False
 
         if is_empty:
             log_execution(logger, f"EMPTY RESULT FROM QUERY", logging.WARNING)
             return None
         
-        log_execution(logger, f"Downloading response to {base_dir}...", logging.INFO)
-        response.download(download_dir=base_dir) # Use base_dir directly
+        if results:
+            total_files = len(results)
+            log_execution(logger, f"Query returned {total_files} files. Handing off to HDA bulk downloader...", logging.INFO)
+        else:
+            log_execution(logger, f"Downloading response group as a bulk fallback to {base_dir}...", logging.INFO)
+            
+        try:
+            # Let the hda client manage its own internal concurrent downloads
+            response.download(download_dir=base_dir)
+        except Exception as e:
+            log_execution(logger, f"HDA download stream failed or was interrupted: {e}", logging.ERROR)
+            return None
         
         # Extract the tif files from their zipped folders
         self.gather_tifs_from_zips(
-            source_directory=base_dir, 
+            source_directory=base_dir,
             target_directory=os.path.join(base_dir, "tif_files"),
             logger=logger
         )
+        
         return base_dir
 
     def intersect_config_with_dataframe(
