@@ -698,7 +698,11 @@ class spatial_engine():
                 input_data = self._sanitize_spatial_geometry(input_data, logger=logger)
                 
                 temp_file = "temp_warp_input.tif"
-                input_data.rio.to_raster(temp_file, tiled=True, compress=compress_mode, windowed=True)
+                input_data.rio.to_raster(temp_file, 
+                                         tiled=True, 
+                                         compress=compress_mode, 
+                                         windowed=True, 
+                                         BIGTIFF="YES")
                 source_path = temp_file
                 
                 src_crs = input_data.rio.crs
@@ -741,7 +745,9 @@ class spatial_engine():
                 resampleAlg=resampler,
                 srcNodata=nodata_val,
                 dstNodata=nodata_val,
-                creationOptions=[f'COMPRESS={compress_mode.upper()}', 'TILED=YES'],
+                creationOptions=[f'COMPRESS={compress_mode.upper()}', 
+                                 'TILED=YES',
+                                 'BIGTIFF=YES'],
                 warpMemoryLimit=memory_limit_bytes,
                 warpOptions=['NUM_THREADS=ALL_CPUS'] 
             )
@@ -826,15 +832,15 @@ class spatial_engine():
                 with rasterio.open(source_data) as src:
                     meta = src.meta.copy()
                     meta.update({
-                        "driver": "GTiff",  # <--- FORCE STANDARD GEOTIFF INSTEAD OF VRT
+                        "driver": "GTiff",  
                         "dtype": "float32",
                         "nodata": np.nan,
                         "compress": "lzw",
                         "tiled": True,
                         "blockxsize": 2048,
-                        "blockysize": 2048
+                        "blockysize": 2048,
+                        "BIGTIFF": "YES"
                     })
-
                     with rasterio.open(temp_mask_path, "w", **meta) as dst:
                         for ji, window in src.block_windows(1):
                             block = src.read(1, window=window)
