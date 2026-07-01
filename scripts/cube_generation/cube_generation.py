@@ -3,7 +3,14 @@ import os
 import logging
 from bmc.cube.bmd import bmd_cube
 
-pan_eu_recipe="""
+# Dynamically resolve the absolute path to the catalog based on this script's location
+# __file__ is the path to cube_generation.py
+script_dir = os.path.dirname(os.path.abspath(__file__))
+
+# Go up two levels to hit the BmC root, then down into the meta folder
+catalog_path = os.path.abspath(os.path.join(script_dir, "../../meta/chelsa_gp_stac/chelsa_master.parquet"))
+
+pan_eu_recipe=f"""
 base_dir: /storage/niels/bmc/cube_generation
 cube_name: europe_chelsa_10km_eea
 
@@ -29,7 +36,7 @@ temporal:
 sources:
   chelsa:
     enabled: true
-    catalog_path: ../../../meta/chelsa_gp_stac/chelsa_master.parquet
+    catalog_path: {catalog_path}
     levels:
       daily:
         include: false
