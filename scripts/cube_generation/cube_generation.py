@@ -77,12 +77,13 @@ sources:
           bio18: true
           bio19: true
 """
+# 1. Parse the string into a dictionary
 recipe = yaml.safe_load(pan_eu_recipe)
-try:
-    recipe_data = yaml.safe_load(recipe)
-    
+
+try:  
+    # 2. Dump the dictionary directly to the file (skipping the redundant load)
     with open("panEU_recipe.yaml", "w", encoding="utf-8") as file:
-        yaml.dump(recipe_data, file, default_flow_style=False, sort_keys=False)
+        yaml.dump(recipe, file, default_flow_style=False, sort_keys=False)
         
     print("YAML file successfully generated!")
     
