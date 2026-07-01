@@ -326,7 +326,7 @@ class spatiotemporal_cube(spatial_engine, ABC):
         max_workers: int = 10,
         logger: Optional[logging.Logger] = None
     ) -> Dict[str, xr.Dataset]:
-        """The universal single-pass rectangular processing loop."""
+        """The universal single-pass rectangular processing loop, optimized for out-of-core memory safety."""
         
         # Handle configuration structure (from generate_cube_recipe)
         paths_cfg = recipe.get('paths', {})
@@ -370,7 +370,7 @@ class spatiotemporal_cube(spatial_engine, ABC):
         log_execution(logger, f"  WGS84 Bounds: [MinLon: {wgs84_bounds[0]:.4f}, MinLat: {wgs84_bounds[1]:.4f}, MaxLon: {wgs84_bounds[2]:.4f}, MaxLat: {wgs84_bounds[3]:.4f}]", logging.INFO)
         log_execution(logger, f"  Proj Bounds : [MinX: {target_bounds[0]:.2f}, MinY: {target_bounds[1]:.2f}, MaxX: {target_bounds[2]:.2f}, MaxY: {target_bounds[3]:.2f}]\n", logging.INFO)
 
-        # 4. Fetch the Data
+        # 4. Resolve Master Fetch Envelope (Done once using the first file)
         sample_file_path = execution_plan.iloc[0]['vsi_path']
         source_bbox = build_envelope_from_file(
             target_crs=target_crs,
@@ -379,70 +379,86 @@ class spatiotemporal_cube(spatial_engine, ABC):
             pixel_buffer=5,
             logger=logger
         )
-        
-        target_paths = execution_plan['vsi_path'].unique().tolist()
-        raw_fetched_data = parallel_fetch_rasters(target_paths, source_bbox, max_workers)
-
-        # 5. Ask Child to Inject Metadata
-        level_variable_bins: Dict[str, Dict[str, List[xr.DataArray]]] = {
-            lvl: {} for lvl in execution_plan['level'].unique()
-        }
-        for _, row in execution_plan.iterrows():
-            raw_da = raw_fetched_data.get(row['vsi_path'])
-            if raw_da is not None:
-                level, structured_da = self.parse_metadata(row, raw_da)
-                level_variable_bins[level].setdefault(str(structured_da.name), []).append(structured_da)
 
         final_cubes: Dict[str, xr.Dataset] = {}
+        
+        # Dictionary to store the tiny warped results before final merge
+        level_reprojected_vars: Dict[str, List[xr.DataArray]] = {
+            lvl: [] for lvl in execution_plan['level'].unique()
+        }
 
-        # 6. Harmonize and Warp
-        for level, variables_dict in level_variable_bins.items():
-            if not variables_dict: continue
+        # 5. Group the Execution Plan and Fetch Iteratively
+        grouped_plan = execution_plan.groupby(['level', 'variable'])
+        
+        for (level, var_name), group_df in grouped_plan:
+            log_execution(logger, f"\nProcessing Level: '{level}' | Variable: '{var_name}'...", logging.INFO)
             
-            log_execution(logger, f"Harmonizing and warping level '{level}' cubes in single-pass...", logging.INFO)
-            reprojected_vars = []
+            # --- MEMORY SAFE: Fetch only the slices for THIS specific variable ---
+            target_paths = group_df['vsi_path'].unique().tolist()
+            raw_fetched_data = parallel_fetch_rasters(target_paths, source_bbox, max_workers)
             
-            for var_name, da_list in variables_dict.items():
+            # Inject Metadata
+            da_list = []
+            for _, row in group_df.iterrows():
+                raw_da = raw_fetched_data.get(row['vsi_path'])
+                if raw_da is not None:
+                    _, structured_da = self.parse_metadata(row, raw_da)
+                    da_list.append(structured_da)
+                    
+            if not da_list:
+                log_execution(logger, f"No valid data returned for {var_name}. Skipping.", logging.WARNING)
+                continue
                 
-                # Z-Stacking
-                base_x, base_y = da_list[0].coords['x'], da_list[0].coords['y']
-                snapped_list = [d.assign_coords(x=base_x, y=base_y) for d in da_list]
-                
-                z_dim = [dim for dim in snapped_list[0].dims if dim not in ['x', 'y']][0]
-                snapped_list.sort(key=lambda da: da.coords[z_dim].values[0])
-                
-                combined_da = xr.concat(snapped_list, dim=z_dim)
-                combined_da.name = var_name
+            # Z-Stacking
+            base_x, base_y = da_list[0].coords['x'], da_list[0].coords['y']
+            snapped_list = [d.assign_coords(x=base_x, y=base_y) for d in da_list]
+            
+            z_dim = [dim for dim in snapped_list[0].dims if dim not in ['x', 'y']][0]
+            snapped_list.sort(key=lambda da: da.coords[z_dim].values[0])
+            
+            combined_da = xr.concat(snapped_list, dim=z_dim)
+            combined_da.name = var_name
 
-                # GDAL Rules & Metadata Catch
-                rule = self.get_resample_rule(var_name)
-                combined_da = self._sanitize_spatial_geometry(combined_da, default_crs="EPSG:4326", logger=logger)
-                non_spatial_coords = {k: v for k, v in combined_da.coords.items() if k not in ['x', 'y', 'spatial_ref']}
+            # GDAL Rules & Metadata Catch
+            rule = self.get_resample_rule(var_name)
+            combined_da = self._sanitize_spatial_geometry(combined_da, default_crs="EPSG:4326", logger=logger)
+            non_spatial_coords = {k: v for k, v in combined_da.coords.items() if k not in ['x', 'y', 'spatial_ref']}
 
-                # Affine Reprojection utilizing your parent method
-                cache_dir = os.path.join(base_dir, "warp_cache", level)
-                os.makedirs(cache_dir, exist_ok=True)
-                out_filepath = os.path.join(cache_dir, f"{var_name}_aligned.tif")
-                
-                warped_da = self.affine_reproject(
-                    input_data=combined_da, 
-                    output_filepath=out_filepath, 
-                    grid_name=target_grid_key, 
-                    resample_keyword=rule, 
-                    logger=logger
-                )
-                
-                # Mathematical Rectangular Clip
-                warped_da = warped_da.rio.clip_box(*target_bounds)
-                
-                # Metadata Release
-                warped_da = warped_da.rename({'band': z_dim})
-                warped_da = warped_da.assign_coords(non_spatial_coords)
-                warped_da.name = var_name
-                
-                reprojected_vars.append(warped_da)
-                
-            # Merge and MultiIndex (using child's rules)
+            # Affine Reprojection
+            cache_dir = os.path.join(base_dir, "warp_cache", level)
+            os.makedirs(cache_dir, exist_ok=True)
+            out_filepath = os.path.join(cache_dir, f"{var_name}_aligned.tif")
+            
+            warped_da = self.affine_reproject(
+                input_data=combined_da, 
+                output_filepath=out_filepath, 
+                grid_name=target_grid_key, 
+                resample_keyword=rule, 
+                logger=logger
+            )
+            
+            # Mathematical Rectangular Clip
+            warped_da = warped_da.rio.clip_box(*target_bounds)
+            
+            # Metadata Release
+            warped_da = warped_da.rename({'band': z_dim})
+            warped_da = warped_da.assign_coords(non_spatial_coords)
+            warped_da.name = var_name
+            
+            level_reprojected_vars[level].append(warped_da)
+            
+            # --- CRITICAL: Release massive raw arrays from memory ---
+            del raw_fetched_data
+            del da_list
+            del snapped_list
+            del combined_da
+            gc.collect()
+            
+        # 6. Harmonize and MultiIndex by Level
+        log_execution(logger, "\nFinalizing Multidimensional Cubes...", logging.INFO)
+        for level, reprojected_vars in level_reprojected_vars.items():
+            if not reprojected_vars: continue
+            
             level_cube = xr.merge(reprojected_vars, combine_attrs='drop_conflicts', join='outer')
             final_cubes[level] = self.apply_multi_index(level, level_cube)
             
