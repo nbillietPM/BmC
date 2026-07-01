@@ -419,6 +419,24 @@ class spatiotemporal_cube(spatial_engine, ABC):
             combined_da = xr.concat(snapped_list, dim=z_dim)
             combined_da.name = var_name
 
+            nodata_val = combined_da.rio.nodata
+
+            if nodata_val is not None:
+                # Check if the array is currently an integer type
+                if np.issubdtype(combined_da.dtype, np.integer):
+                    dtype_limits = np.iinfo(combined_da.dtype)
+                    
+                    # If the NoData value falls outside the legal bounds of this integer type
+                    if not (dtype_limits.min <= nodata_val <= dtype_limits.max):
+                        if logger:
+                            logger.info(f"NoData mismatch for {var_name}: {nodata_val} doesn't fit in {combined_da.dtype}. Upcasting to float32.")
+                        
+                        # Upcast to float32 safely
+                        combined_da = combined_da.astype('float32')
+
+                # Explicitly register the NoData value so GDAL honors it during the warp
+                combined_da.rio.write_nodata(nodata_val, inplace=True)
+
             # GDAL Rules & Metadata Catch
             rule = self.get_resample_rule(var_name)
             combined_da = self._sanitize_spatial_geometry(combined_da, default_crs="EPSG:4326", logger=logger)
