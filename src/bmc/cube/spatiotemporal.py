@@ -326,9 +326,36 @@ class spatiotemporal_cube(spatial_engine, ABC):
         max_workers: int = 10,
         logger: Optional[logging.Logger] = None
     ) -> Dict[str, xr.Dataset]:
-        """The universal single-pass rectangular processing loop, optimized for out-of-core memory safety."""
+        """
+        The universal out-of-core spatial processing loop.
         
-        # Handle configuration structure (from generate_cube_recipe)
+        This method executes the spatiotemporal pipeline by fetching raw spatial 
+        data, harmonizing spatial bounds, and leveraging a multithreaded worker 
+        pool to project individual 2D slices in parallel. This slice-based 
+        architecture keeps RAM utilization low while maximizing CPU core usage, 
+        allowing for massive continental-scale extractions without Out-Of-Memory 
+        (OOM) crashes.
+
+        Parameters
+        ----------
+        recipe : dict
+            The parsed YAML configuration dictating the bounds, grids, and targets.
+        max_workers : int, optional
+            The maximum number of parallel threads to use for both network fetching 
+            and GDAL reprojection. Defaults to 10.
+        logger : logging.Logger, optional
+            Logger instance for execution tracking. If None, one is automatically created.
+
+        Returns
+        -------
+        Dict[str, xr.Dataset]
+            A dictionary mapping processing levels (e.g., 'bioclim') to their fully 
+            assembled, strictly aligned multidimensional Data Cubes.
+        """
+        
+        # ==========================================
+        # 1. Initialization & Spatial Framework
+        # ==========================================
         paths_cfg = recipe.get('paths', {})
         base_dir = paths_cfg.get('base_dir') or recipe.get('base_dir', './outputs/')
         
@@ -341,20 +368,17 @@ class spatiotemporal_cube(spatial_engine, ABC):
 
         log_execution(logger, "\n=== Initiating Out-of-Core Data Cube Generation ===", logging.INFO)
         
-        # 1. Ask Child to Generate Plan
         execution_plan = self.generate_execution_plan(recipe, logger)
         if execution_plan.empty:
             log_execution(logger, "Terminating pipeline: no candidate asset catalog generated.", logging.WARNING)
             return {}
 
-        # 2. Resolve Master Grid
         spatial_cfg = recipe.get('spatial', {})
         target_grid_key = self.resolve_target_grid(spatial_cfg, logger)
         grid_info = self.GRID_REGISTRY[target_grid_key]
         target_crs = grid_info["crs"]
         target_res = grid_info["resolution"]
         
-        # 3. Calculate Rectangular Bounds
         bbox_cfg = spatial_cfg.get('bbox', {})
         wgs84_bounds = (
             min(bbox_cfg.get('long_min', 0), bbox_cfg.get('long_max', 0)),
@@ -362,6 +386,7 @@ class spatiotemporal_cube(spatial_engine, ABC):
             max(bbox_cfg.get('long_min', 0), bbox_cfg.get('long_max', 0)),
             max(bbox_cfg.get('lat_min', 0), bbox_cfg.get('lat_max', 0))
         )
+        # Calculate strict target boundaries to clip the warped arrays later
         target_bounds = transform_bounds("EPSG:4326", target_crs, *wgs84_bounds)
 
         log_execution(logger, f"\n--- Target Spatial Framework Initialized ---", logging.INFO)
@@ -370,7 +395,6 @@ class spatiotemporal_cube(spatial_engine, ABC):
         log_execution(logger, f"  WGS84 Bounds: [MinLon: {wgs84_bounds[0]:.4f}, MinLat: {wgs84_bounds[1]:.4f}, MaxLon: {wgs84_bounds[2]:.4f}, MaxLat: {wgs84_bounds[3]:.4f}]", logging.INFO)
         log_execution(logger, f"  Proj Bounds : [MinX: {target_bounds[0]:.2f}, MinY: {target_bounds[1]:.2f}, MaxX: {target_bounds[2]:.2f}, MaxY: {target_bounds[3]:.2f}]\n", logging.INFO)
 
-        # 4. Resolve Master Fetch Envelope (Done once using the first file)
         sample_file_path = execution_plan.iloc[0]['vsi_path']
         source_bbox = build_envelope_from_file(
             target_crs=target_crs,
@@ -381,23 +405,24 @@ class spatiotemporal_cube(spatial_engine, ABC):
         )
 
         final_cubes: Dict[str, xr.Dataset] = {}
-        
-        # Dictionary to store the tiny warped results before final merge
         level_reprojected_vars: Dict[str, List[xr.DataArray]] = {
             lvl: [] for lvl in execution_plan['level'].unique()
         }
 
-        # 5. Group the Execution Plan and Fetch Iteratively
         grouped_plan = execution_plan.groupby(['level', 'variable'])
         
+        # ==========================================
+        # 2. Main Processing Loop (Per Variable)
+        # ==========================================
         for (level, var_name), group_df in grouped_plan:
             log_execution(logger, f"\nProcessing Level: '{level}' | Variable: '{var_name}'...", logging.INFO)
             
-            # --- MEMORY SAFE: Fetch only the slices for THIS specific variable ---
+            # --- Network Fetch ---
+            # Download chunks strictly for this single variable to cap memory
             target_paths = group_df['vsi_path'].unique().tolist()
             raw_fetched_data = parallel_fetch_rasters(target_paths, source_bbox, max_workers)
             
-            # Inject Metadata
+            # --- Metadata Injection ---
             da_list = []
             for _, row in group_df.iterrows():
                 raw_da = raw_fetched_data.get(row['vsi_path'])
@@ -409,75 +434,117 @@ class spatiotemporal_cube(spatial_engine, ABC):
                 log_execution(logger, f"No valid data returned for {var_name}. Skipping.", logging.WARNING)
                 continue
                 
-            # Z-Stacking
+            # Align raw data to a shared temporary grid before parallelization
             base_x, base_y = da_list[0].coords['x'], da_list[0].coords['y']
             snapped_list = [d.assign_coords(x=base_x, y=base_y) for d in da_list]
             
+            # Determine the primary Z-axis (e.g., 'time', 'scenario')
             z_dim = [dim for dim in snapped_list[0].dims if dim not in ['x', 'y']][0]
             snapped_list.sort(key=lambda da: da.coords[z_dim].values[0])
             
-            combined_da = xr.concat(snapped_list, dim=z_dim)
+            # Capture non-spatial coordinates (like 'ensemble' or 'time_range') to restore later
+            non_spatial_coords = {k: v for k, v in snapped_list[0].coords.items() if k not in ['x', 'y', 'spatial_ref', z_dim]}
+            
+            rule = self.get_resample_rule(var_name)
+            cache_dir = os.path.join(base_dir, "warp_cache", level, var_name)
+            os.makedirs(cache_dir, exist_ok=True)
+
+            # ==========================================
+            # 3. Parallel 2D Slice Warping (The Engine)
+            # ==========================================
+            def _warp_worker(da_2d: xr.DataArray, index: int) -> str:
+                """
+                Worker function executed by the thread pool. 
+                Isolates NoData handling and warping to a single 2D slice.
+                """
+                # A. Handle NoData mathematically safely
+                nodata_val = da_2d.rio.nodata
+                if nodata_val is not None:
+                    if np.issubdtype(da_2d.dtype, np.integer):
+                        limits = np.iinfo(da_2d.dtype)
+                        if not (limits.min <= nodata_val <= limits.max):
+                            da_2d = da_2d.astype('float32')
+                    da_2d.rio.write_nodata(nodata_val, inplace=True)
+
+                # B. Prevent Xarray serialization conflicts
+                if '_FillValue' in da_2d.attrs:
+                    del da_2d.attrs['_FillValue']
+
+                # C. Sanitize and Warp
+                da_2d = self._sanitize_spatial_geometry(da_2d, default_crs="EPSG:4326", logger=None)
+                out_filepath = os.path.join(cache_dir, f"slice_{index:04d}.tif")
+                
+                # Write individual 2D raster to disk (Highly memory efficient)
+                self.affine_reproject(
+                    input_data=da_2d, 
+                    output_filepath=out_filepath, 
+                    grid_name=target_grid_key, 
+                    resample_keyword=rule, 
+                    logger=None  # Suppressed to avoid terminal spam from 32 threads
+                )
+                return out_filepath
+
+            # Fire up threads. GDAL releases the Python GIL, allowing true C++ parallelism.
+            num_cores = min(os.cpu_count() or 4, len(snapped_list), max_workers)
+            log_execution(logger, f"  -> Firing {num_cores} parallel cores for spatial warping...", logging.INFO)
+            
+            warped_tif_paths = []
+            with ThreadPoolExecutor(max_workers=num_cores) as executor:
+                # Submit tasks and preserve exact order for perfect Z-axis stacking
+                futures = [executor.submit(_warp_worker, da, i) for i, da in enumerate(snapped_list)]
+                warped_tif_paths = [future.result() for future in futures]
+
+            # ==========================================
+            # 4. Robust 3D Re-assembly
+            # ==========================================
+            
+            aligned_slices = []
+            log_execution(logger, f"  -> Reassembling 3D {var_name} cube from warped slices...", logging.INFO)
+            
+            for original_da, tif_path in zip(snapped_list, warped_tif_paths):
+                # Lazily open the purely spatial GeoTIFF
+                warped_2d = rioxarray.open_rasterio(tif_path, chunks=True)
+                
+                # Strip generic 'band' dimension added by GDAL
+                if 'band' in warped_2d.dims:
+                    warped_2d = warped_2d.squeeze('band').drop_vars('band')
+                    
+                # Re-attach the exact Z-dimension coordinate while simultaneously expanding the dimension
+                z_coord_val = np.atleast_1d(original_da[z_dim].values)
+                warped_2d = warped_2d.expand_dims({z_dim: z_coord_val})
+                
+                aligned_slices.append(warped_2d)
+
+            # Reconstruct the 3D block seamlessly
+            combined_da = xr.concat(aligned_slices, dim=z_dim)
+            combined_da = combined_da.assign_coords(non_spatial_coords)
             combined_da.name = var_name
 
-            nodata_val = combined_da.rio.nodata
-
-            if nodata_val is not None:
-                # Check if the array is currently an integer type
-                if np.issubdtype(combined_da.dtype, np.integer):
-                    dtype_limits = np.iinfo(combined_da.dtype)
-                    
-                    # If the NoData value falls outside the legal bounds of this integer type
-                    if not (dtype_limits.min <= nodata_val <= dtype_limits.max):
-                        if logger:
-                            logger.info(f"NoData mismatch for {var_name}: {nodata_val} doesn't fit in {combined_da.dtype}. Upcasting to float32.")
-                        
-                        # Upcast to float32 safely
-                        combined_da = combined_da.astype('float32')
-
-                # Explicitly register the NoData value so GDAL honors it during the warp
-                combined_da.rio.write_nodata(nodata_val, inplace=True)
-
-            # GDAL Rules & Metadata Catch
-            rule = self.get_resample_rule(var_name)
-            combined_da = self._sanitize_spatial_geometry(combined_da, default_crs="EPSG:4326", logger=logger)
-            non_spatial_coords = {k: v for k, v in combined_da.coords.items() if k not in ['x', 'y', 'spatial_ref']}
-
-            # Affine Reprojection
-            cache_dir = os.path.join(base_dir, "warp_cache", level)
-            os.makedirs(cache_dir, exist_ok=True)
-            out_filepath = os.path.join(cache_dir, f"{var_name}_aligned.tif")
+            # Clip mathematically to the target bounding box
+            combined_da = combined_da.rio.clip_box(*target_bounds)
             
-            warped_da = self.affine_reproject(
-                input_data=combined_da, 
-                output_filepath=out_filepath, 
-                grid_name=target_grid_key, 
-                resample_keyword=rule, 
-                logger=logger
-            )
+            # --- Force materialization to sever the Dask execution graph ---
+            combined_da = combined_da.load()
+            level_reprojected_vars[level].append(combined_da)
             
-            # Mathematical Rectangular Clip
-            warped_da = warped_da.rio.clip_box(*target_bounds)
-            
-            # Metadata Release
-            warped_da = warped_da.rename({'band': z_dim})
-            warped_da = warped_da.assign_coords(non_spatial_coords)
-            warped_da.name = var_name
-            
-            level_reprojected_vars[level].append(warped_da)
-            
-            # --- CRITICAL: Release massive raw arrays from memory ---
+            # --- CRITICAL: Aggressive garbage collection ---
             del raw_fetched_data
             del da_list
             del snapped_list
-            del combined_da
+            del aligned_slices
             gc.collect()
             
-        # 6. Harmonize and MultiIndex by Level
+        # ==========================================
+        # 5. Final Dataset Harmonization
+        # ==========================================
         log_execution(logger, "\nFinalizing Multidimensional Cubes...", logging.INFO)
         for level, reprojected_vars in level_reprojected_vars.items():
             if not reprojected_vars: continue
             
-            level_cube = xr.merge(reprojected_vars, combine_attrs='drop_conflicts', join='outer')
+            # join='override' prevents explosive grid expansion caused by microscopic coordinate rounding errors
+            level_cube = xr.merge(reprojected_vars, combine_attrs='drop_conflicts', join='override')
+            
+            # Apply vendor-specific complex MultiIndexing (from child class)
             final_cubes[level] = self.apply_multi_index(level, level_cube)
             
         log_execution(logger, "=== Data Cube Framework Generation Complete ===", logging.INFO)

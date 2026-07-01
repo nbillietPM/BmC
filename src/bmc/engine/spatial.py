@@ -4,6 +4,7 @@ import glob
 import gc
 from pathlib import Path
 import tempfile
+import uuid
 
 import logging
 from typing import Optional, Union, Dict, Any, List, Tuple
@@ -697,7 +698,13 @@ class spatial_engine():
                 log_execution(logger, "Lazy xarray object detected. Preparing for disk stream...", logging.INFO)
                 input_data = self._sanitize_spatial_geometry(input_data, logger=logger)
                 
-                temp_file = "temp_warp_input.tif"
+                # =================================================================
+                # THREAD-SAFE TEMPORARY FILE GENERATION
+                # =================================================================
+                # Generates a completely unique UUID for this specific thread's operation
+                unique_hash = uuid.uuid4().hex
+                temp_file = f"temp_warp_input_{unique_hash}.tif"
+                
                 input_data.rio.to_raster(temp_file, 
                                          tiled=True, 
                                          compress=compress_mode, 
