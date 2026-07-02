@@ -505,19 +505,29 @@ class spatiotemporal_cube(spatial_engine, ABC):
                 # Lazily open the purely spatial GeoTIFF
                 warped_2d = rioxarray.open_rasterio(tif_path, chunks=True)
                 
-                # Strip generic 'band' dimension added by GDAL
+                # 1. rioxarray adds a 'band' dimension of size 1. 
+                # Drop the dummy coordinate value, then rename the dimension to our actual Z-axis.
                 if 'band' in warped_2d.dims:
-                    warped_2d = warped_2d.squeeze('band').drop_vars('band')
-                    
-                # Re-attach the exact Z-dimension coordinate while simultaneously expanding the dimension
-                z_coord_val = np.atleast_1d(original_da[z_dim].values)
-                warped_2d = warped_2d.expand_dims({z_dim: z_coord_val})
+                    warped_2d = warped_2d.drop_vars('band', errors='ignore')
+                    warped_2d = warped_2d.rename({'band': z_dim})
+                else:
+                    warped_2d = warped_2d.expand_dims(z_dim)
+
+                # 2. Extract metadata from the original unwarped slice
+                meta_coords = {}
+                for k, v in original_da.coords.items():
+                    if k not in ['x', 'y', 'spatial_ref']:
+                        # Wrap the scalar value in a 1D array so it maps perfectly to our length-1 Z-dimension
+                        meta_coords[k] = (z_dim, np.atleast_1d(v.values))
+                
+                # 3. Attach metadata directly to the slice
+                warped_2d = warped_2d.assign_coords(meta_coords)
                 
                 aligned_slices.append(warped_2d)
 
-            # Reconstruct the 3D block seamlessly
+            # 4. Reconstruct the 3D block! 
+            # Xarray automatically stacks all the length-1 slices (and their metadata) into a flawless 46-length MultiIndex block.
             combined_da = xr.concat(aligned_slices, dim=z_dim)
-            combined_da = combined_da.assign_coords(non_spatial_coords)
             combined_da.name = var_name
 
             # Clip mathematically to the target bounding box
