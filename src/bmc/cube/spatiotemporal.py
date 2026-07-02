@@ -25,7 +25,7 @@ from rasterio.enums import Resampling
 
 from bmc.utils.spatial import build_envelope_from_file
 from bmc.utils.io import parallel_fetch_rasters
-from bmc.utils.logger import log_execution
+from bmc.utils.logger import log_execution, ResourceProfiler
 
 from bmc.engine.spatial import spatial_engine
 
@@ -356,6 +356,8 @@ class spatiotemporal_cube(spatial_engine, ABC):
         # ==========================================
         # 1. Initialization & Spatial Framework
         # ==========================================
+        # Parse the output directory configuration and set up the logging framework.
+        # This isolates execution logs from the core Jupyter/terminal output.
         paths_cfg = recipe.get('paths', {})
         base_dir = paths_cfg.get('base_dir') or recipe.get('base_dir', './outputs/')
         
@@ -366,19 +368,28 @@ class spatiotemporal_cube(spatial_engine, ABC):
             logger = self._setup_pipeline_logger(logger_name="spatiotemporal_cube", log_filepath=log_filepath)
             self.logger = logger
 
+        # Initialize the hardware resource profiler to track CPU, RAM, and Thread count.
+        tracker = ResourceProfiler(log_dir=os.path.join(base_dir, 'logs'))
+
         log_execution(logger, "\n=== Initiating Out-of-Core Data Cube Generation ===", logging.INFO)
         
+        # Cross-reference the user's YAML requested variables against the target catalog
+        # to generate a strictly ordered execution queue (the plan).
         execution_plan = self.generate_execution_plan(recipe, logger)
         if execution_plan.empty:
             log_execution(logger, "Terminating pipeline: no candidate asset catalog generated.", logging.WARNING)
             return {}
 
+        # Resolve the definitive Master Grid math. All datasets, regardless of their 
+        # original native format, will be rigidly snapped to this spatial matrix.
         spatial_cfg = recipe.get('spatial', {})
         target_grid_key = self.resolve_target_grid(spatial_cfg, logger)
         grid_info = self.GRID_REGISTRY[target_grid_key]
         target_crs = grid_info["crs"]
         target_res = grid_info["resolution"]
         
+        # Build the exact rectangular coordinate boundaries in WGS84, then reproject 
+        # those boundaries mathematically into the chosen Master Grid CRS.
         bbox_cfg = spatial_cfg.get('bbox', {})
         wgs84_bounds = (
             min(bbox_cfg.get('long_min', 0), bbox_cfg.get('long_max', 0)),
@@ -386,7 +397,6 @@ class spatiotemporal_cube(spatial_engine, ABC):
             max(bbox_cfg.get('long_min', 0), bbox_cfg.get('long_max', 0)),
             max(bbox_cfg.get('lat_min', 0), bbox_cfg.get('lat_max', 0))
         )
-        # Calculate strict target boundaries to clip the warped arrays later
         target_bounds = transform_bounds("EPSG:4326", target_crs, *wgs84_bounds)
 
         log_execution(logger, f"\n--- Target Spatial Framework Initialized ---", logging.INFO)
@@ -395,6 +405,9 @@ class spatiotemporal_cube(spatial_engine, ABC):
         log_execution(logger, f"  WGS84 Bounds: [MinLon: {wgs84_bounds[0]:.4f}, MinLat: {wgs84_bounds[1]:.4f}, MaxLon: {wgs84_bounds[2]:.4f}, MaxLat: {wgs84_bounds[3]:.4f}]", logging.INFO)
         log_execution(logger, f"  Proj Bounds : [MinX: {target_bounds[0]:.2f}, MinY: {target_bounds[1]:.2f}, MaxX: {target_bounds[2]:.2f}, MaxY: {target_bounds[3]:.2f}]\n", logging.INFO)
 
+        # Generate a buffered envelope from a sample file. This slightly oversized footprint 
+        # guarantees we fetch enough surrounding pixels to feed GDAL's multi-pixel interpolation kernels 
+        # (like Cubic or Bilinear) without causing edge starvation.
         sample_file_path = execution_plan.iloc[0]['vsi_path']
         source_bbox = build_envelope_from_file(
             target_crs=target_crs,
@@ -414,15 +427,22 @@ class spatiotemporal_cube(spatial_engine, ABC):
         # ==========================================
         # 2. Main Processing Loop (Per Variable)
         # ==========================================
+        # We process variables sequentially. This strict isolation prevents the OS 
+        # from caching too many discrete variables at once, entirely avoiding RAM overload.
         for (level, var_name), group_df in grouped_plan:
             log_execution(logger, f"\nProcessing Level: '{level}' | Variable: '{var_name}'...", logging.INFO)
+            tracker.log_usage(f"START Processing {var_name}")
             
             # --- Network Fetch ---
-            # Download chunks strictly for this single variable to cap memory
             target_paths = group_df['vsi_path'].unique().tolist()
-            raw_fetched_data = parallel_fetch_rasters(target_paths, source_bbox, max_workers)
+            
+            # [PROFILER 1]: Track the strain caused by the parallel network fetch
+            with tracker.track_strain(f"Network Fetch ({var_name})"):
+                raw_fetched_data = parallel_fetch_rasters(target_paths, source_bbox, max_workers)
             
             # --- Metadata Injection ---
+            # Parses file-level contextual data (e.g., year, scenario) and attaches 
+            # it to the lazy arrays before they are warped.
             da_list = []
             for _, row in group_df.iterrows():
                 raw_da = raw_fetched_data.get(row['vsi_path'])
@@ -434,16 +454,27 @@ class spatiotemporal_cube(spatial_engine, ABC):
                 log_execution(logger, f"No valid data returned for {var_name}. Skipping.", logging.WARNING)
                 continue
                 
-            # Align raw data to a shared temporary grid before parallelization
+            # Guarantee every slice mathematically shares the exact same base temporary grid 
+            # before moving into the multithreaded phase.
             base_x, base_y = da_list[0].coords['x'], da_list[0].coords['y']
             snapped_list = [d.assign_coords(x=base_x, y=base_y) for d in da_list]
             
-            # Determine the primary Z-axis (e.g., 'time', 'scenario')
+            # Sort the slices chronologically/logically along the Z-axis to ensure 
+            # our 3D block is perfectly ordered upon final reconstruction.
             z_dim = [dim for dim in snapped_list[0].dims if dim not in ['x', 'y']][0]
             snapped_list.sort(key=lambda da: da.coords[z_dim].values[0])
             
-            # Capture non-spatial coordinates (like 'ensemble' or 'time_range') to restore later
-            non_spatial_coords = {k: v for k, v in snapped_list[0].coords.items() if k not in ['x', 'y', 'spatial_ref', z_dim]}
+            # --- Pre-compile Master Metadata Vectors ---
+            # To prevent thread-safety crashes later, we strip all metadata from the 
+            # individual 2D slices right now and store them as complete 1D vectors.
+            log_execution(logger, f"  -> Compiling master metadata coordinates for {var_name}...", logging.INFO)
+            z_vals = np.array([da[z_dim].values for da in snapped_list]).flatten()
+            full_meta_coords = {z_dim: z_vals}
+            
+            for k in snapped_list[0].coords.keys():
+                if k not in ['x', 'y', 'spatial_ref', z_dim]:
+                    meta_vector = np.array([da[k].values for da in snapped_list]).flatten()
+                    full_meta_coords[k] = (z_dim, meta_vector)
             
             rule = self.get_resample_rule(var_name)
             cache_dir = os.path.join(base_dir, "warp_cache", level, var_name)
@@ -457,7 +488,7 @@ class spatiotemporal_cube(spatial_engine, ABC):
                 Worker function executed by the thread pool. 
                 Isolates NoData handling and warping to a single 2D slice.
                 """
-                # A. Handle NoData mathematically safely
+                # A. Handle NoData mathematically safely to avoid integer wraparound overflow
                 nodata_val = da_2d.rio.nodata
                 if nodata_val is not None:
                     if np.issubdtype(da_2d.dtype, np.integer):
@@ -466,84 +497,83 @@ class spatiotemporal_cube(spatial_engine, ABC):
                             da_2d = da_2d.astype('float32')
                     da_2d.rio.write_nodata(nodata_val, inplace=True)
 
-                # B. Prevent Xarray serialization conflicts
+                # B. Prevent Xarray serialization conflicts when saving the TIFF
                 if '_FillValue' in da_2d.attrs:
                     del da_2d.attrs['_FillValue']
 
-                # C. Sanitize and Warp
+                # C. Stream the lazy slice through the GDAL C++ warping engine
                 da_2d = self._sanitize_spatial_geometry(da_2d, default_crs="EPSG:4326", logger=None)
                 out_filepath = os.path.join(cache_dir, f"slice_{index:04d}.tif")
                 
-                # Write individual 2D raster to disk (Highly memory efficient)
                 self.affine_reproject(
                     input_data=da_2d, 
                     output_filepath=out_filepath, 
                     grid_name=target_grid_key, 
                     resample_keyword=rule, 
-                    logger=None  # Suppressed to avoid terminal spam from 32 threads
+                    logger=None  
                 )
                 return out_filepath
 
-            # Fire up threads. GDAL releases the Python GIL, allowing true C++ parallelism.
+            # Cap the threads mathematically to avoid overwhelming system resources
             num_cores = min(os.cpu_count() or 4, len(snapped_list), max_workers)
             log_execution(logger, f"  -> Firing {num_cores} parallel cores for spatial warping...", logging.INFO)
             
             warped_tif_paths = []
-            with ThreadPoolExecutor(max_workers=num_cores) as executor:
-                # Submit tasks and preserve exact order for perfect Z-axis stacking
-                futures = [executor.submit(_warp_worker, da, i) for i, da in enumerate(snapped_list)]
-                warped_tif_paths = [future.result() for future in futures]
+
+            # [PROFILER 2]: Track CPU spike during concurrent C++ GDAL warping.
+            # Using the `with` block guarantees the threads are brutally terminated 
+            # upon completion, preventing ghost-process memory leaks.
+            with tracker.track_strain(f"Parallel Warp ({var_name})"):
+                with ThreadPoolExecutor(max_workers=num_cores) as executor:
+                    futures = [executor.submit(_warp_worker, da, i) for i, da in enumerate(snapped_list)]
+                    warped_tif_paths = [future.result() for future in futures]
 
             # ==========================================
-            # 4. Robust 3D Re-assembly
+            # 4. Robust 3D Re-assembly (Anonymous Stacking)
             # ==========================================
-            
             aligned_slices = []
             log_execution(logger, f"  -> Reassembling 3D {var_name} cube from warped slices...", logging.INFO)
             
-            for original_da, tif_path in zip(snapped_list, warped_tif_paths):
-                # Lazily open the purely spatial GeoTIFF
+            for tif_path in warped_tif_paths:
                 warped_2d = rioxarray.open_rasterio(tif_path, chunks=True)
                 
-                # 1. rioxarray adds a 'band' dimension of size 1. 
-                # Drop the dummy coordinate value, then rename the dimension to our actual Z-axis.
+                # By squeezing out 'band' and refusing to inject metadata here, the slices remain 
+                # mathematically blank. This ensures the underlying Dask graph remains flat and thread-safe.
                 if 'band' in warped_2d.dims:
-                    warped_2d = warped_2d.drop_vars('band', errors='ignore')
-                    warped_2d = warped_2d.rename({'band': z_dim})
-                else:
-                    warped_2d = warped_2d.expand_dims(z_dim)
-
-                # 2. Extract metadata from the original unwarped slice
-                meta_coords = {}
-                for k, v in original_da.coords.items():
-                    if k not in ['x', 'y', 'spatial_ref']:
-                        # Wrap the scalar value in a 1D array so it maps perfectly to our length-1 Z-dimension
-                        meta_coords[k] = (z_dim, np.atleast_1d(v.values))
-                
-                # 3. Attach metadata directly to the slice
-                warped_2d = warped_2d.assign_coords(meta_coords)
+                    warped_2d = warped_2d.squeeze('band', drop=True)
                 
                 aligned_slices.append(warped_2d)
 
-            # 4. Reconstruct the 3D block! 
-            # Xarray automatically stacks all the length-1 slices (and their metadata) into a flawless 46-length MultiIndex block.
+            # Reconstruct the 3D block blindly.
             combined_da = xr.concat(aligned_slices, dim=z_dim)
             combined_da.name = var_name
 
-            # Clip mathematically to the target bounding box
+            # Stamp the metadata vectors (compiled in Phase 2) onto the completed 3D block.
+            combined_da = combined_da.assign_coords(full_meta_coords)
+
+            # Enforce the absolute bounding box constraints mathematically.
             combined_da = combined_da.rio.clip_box(*target_bounds)
             
-            # --- Force materialization to sever the Dask execution graph ---
-            combined_da = combined_da.load()
+            # [PROFILER 3]: Track the massive RAM spike during physical array materialization.
+            # This triggers Dask to execute the graph safely and pull all files into RAM.
+            with tracker.track_strain(f"Dask Materialization ({var_name})"):
+                combined_da = combined_da.load()
+                
             level_reprojected_vars[level].append(combined_da)
             
-            # --- CRITICAL: Aggressive garbage collection ---
+            # --- Safe Pythonic Garbage Collection ---
+            # Clear Xarray's internal backend cache to release underlying C++ file handles.
+            # This prevents Windows Access Violations and Linux file-descriptor starvation.
+            xr.backends.file_manager.FILE_CACHE.clear()
+            
             del raw_fetched_data
             del da_list
             del snapped_list
             del aligned_slices
             gc.collect()
-            
+
+            tracker.log_usage(f"END Processing {var_name}")
+
         # ==========================================
         # 5. Final Dataset Harmonization
         # ==========================================
@@ -551,10 +581,12 @@ class spatiotemporal_cube(spatial_engine, ABC):
         for level, reprojected_vars in level_reprojected_vars.items():
             if not reprojected_vars: continue
             
-            # join='override' prevents explosive grid expansion caused by microscopic coordinate rounding errors
+            # `join='override'` prevents Xarray from attempting to infinitely stretch 
+            # the spatial grid due to microscopic floating point rounding differences.
             level_cube = xr.merge(reprojected_vars, combine_attrs='drop_conflicts', join='override')
             
-            # Apply vendor-specific complex MultiIndexing (from child class)
+            # Hand the raw Data Cube back to the child class to apply complex, 
+            # vendor-specific multi-indexing (e.g., hierarchical climate models).
             final_cubes[level] = self.apply_multi_index(level, level_cube)
             
         log_execution(logger, "=== Data Cube Framework Generation Complete ===", logging.INFO)
