@@ -1,23 +1,8 @@
-import yaml
-import os
-import logging
-from bmc.cube.bmd import bmd_cube
-
-# Dynamically resolve the absolute path to the catalog based on this script's location
-# __file__ is the path to cube_generation.py
-script_dir = os.path.dirname(os.path.abspath(__file__))
-
-# Go up two levels to hit the BmC root, then down into the meta folder
-catalog_path = os.path.abspath(os.path.join(script_dir, "../../meta/chelsa_gp_stac/chelsa_master.parquet"))
-
-pan_eu_recipe=f"""
 base_dir: /storage/niels/bmc/cube_generation
 cube_name: europe_chelsa_10km_eea
-
 export:
   as_tree: true
   as_nested_dir: true
-
 spatial:
   target_grid: EEA
   target_resolution: 10km
@@ -27,7 +12,6 @@ spatial:
     long_max: 41
     lat_min: 34
     lat_max: 72
-
 temporal:
   start_year: 2018
   start_month: 1
@@ -36,7 +20,7 @@ temporal:
 sources:
   chelsa:
     enabled: true
-    catalog_path: {catalog_path}
+    catalog_path: /home/niels/BmC/meta/chelsa_gp_stac/chelsa_master.parquet
     levels:
       daily:
         include: false
@@ -83,22 +67,3 @@ sources:
           bio17: true
           bio18: true
           bio19: true
-"""
-# 1. Parse the string into a dictionary
-recipe = yaml.safe_load(pan_eu_recipe)
-
-try:  
-    # 2. Dump the dictionary directly to the file (skipping the redundant load)
-    with open("panEU_recipe.yaml", "w", encoding="utf-8") as file:
-        yaml.dump(recipe, file, default_flow_style=False, sort_keys=False)
-        
-    print("YAML file successfully generated!")
-    
-except yaml.YAMLError as exc:
-    print(exc)
-
-
-bmd_engine = bmd_cube()
-bmd_engine.generate_bmd_data("panEU_recipe.yaml", "", max_workers=8)
-bmd_engine.construct_datatree("panEU_recipe.yaml", "")
-bmd_engine.export_tree("panEU_recipe.yaml", "")

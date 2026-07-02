@@ -756,7 +756,7 @@ class spatial_engine():
                                  'TILED=YES',
                                  'BIGTIFF=YES'],
                 warpMemoryLimit=memory_limit_bytes,
-                warpOptions=['NUM_THREADS=ALL_CPUS'] 
+                warpOptions=['NUM_THREADS=1'] 
             )
             
             gdal.Warp(output_filepath, source_path, options=warp_options)
