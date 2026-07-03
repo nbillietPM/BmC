@@ -14,9 +14,8 @@ pan_eu_recipe=f"""
 base_dir: /storage/niels/bmc/cube_generation
 cube_name: europe_chelsa_10km_eea
 
-export:
-  as_tree: true
-  as_nested_dir: true
+export_as:
+  format: netcdf
 
 spatial:
   target_grid: EEA
