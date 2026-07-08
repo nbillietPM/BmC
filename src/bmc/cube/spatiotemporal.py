@@ -332,8 +332,8 @@ class spatiotemporal_cube(spatial_engine, ABC):
         The universal out-of-core spatial processing loop.
         
         This method executes the spatiotemporal pipeline by fetching raw spatial 
-        data, harmonizing spatial bounds, and leveraging a multithreaded worker 
-        pool to project individual 2D slices in parallel. 
+        data, harmonizing spatial bounds, and leveraging a hybrid multithreaded worker 
+        pool to project individual 2D slices. 
         
         It utilizes a "Disk-Spilling Data Lake" architecture: finished multidimensional 
         variables are immediately written to a nested directory structure on disk 
@@ -364,10 +364,7 @@ class spatiotemporal_cube(spatial_engine, ABC):
         base_dir = paths_cfg.get('base_dir') or recipe.get('base_dir', './cubing_output/')
         cube_name = recipe.get('cube_name', 'bmd_default_cube')
         
-        # Dynamically grab the dataset provider (e.g., 'chelsa', 'wekeo')
         dataset_name = recipe.get('dataset_name', self.__class__.__name__.lower().replace('_cube', ''))
-        
-        # Determine preferred output format ('netcdf' or 'zarr')
         export_format = recipe.get('export_as', {}).get('format', 'netcdf').lower()
         
         if logger is None:
@@ -416,7 +413,6 @@ class spatiotemporal_cube(spatial_engine, ABC):
             logger=logger
         )
 
-        # NEW: Track exact file paths as a lightweight nested catalog instead of memory arrays
         level_reprojected_paths: Dict[str, Dict[str, str]] = {
             lvl: {} for lvl in execution_plan['level'].unique()
         }
@@ -467,51 +463,95 @@ class spatiotemporal_cube(spatial_engine, ABC):
             os.makedirs(cache_dir, exist_ok=True)
 
             # ==========================================
-            # 3. Parallel 2D Slice Warping
+            # 3. Hybrid 2D Slice Warping (The Engine)
             # ==========================================
-            def _warp_worker(da_2d: xr.DataArray, index: int) -> str:
-                nodata_val = da_2d.rio.nodata
-                if nodata_val is not None:
-                    if np.issubdtype(da_2d.dtype, np.integer):
-                        limits = np.iinfo(da_2d.dtype)
-                        if not (limits.min <= nodata_val <= limits.max):
-                            da_2d = da_2d.astype('float32')
-                    da_2d.rio.write_nodata(nodata_val, inplace=True)
+            # Calculate the physical RAM footprint of a single 2D slice. 
+            # This metric acts as the trigger switch between our two parallelization architectures.
+            slice_size_mb = snapped_list[0].nbytes / (1024 * 1024)
+            log_execution(logger, f"  -> Estimated single slice size: {slice_size_mb:.2f} MB", logging.INFO)
 
-                if '_FillValue' in da_2d.attrs:
-                    del da_2d.attrs['_FillValue']
-
-                da_2d = self._sanitize_spatial_geometry(da_2d, default_crs="EPSG:4326", logger=None)
-                out_filepath = os.path.join(cache_dir, f"slice_{index:04d}.tif")
+            def _warp_worker(da_2d: xr.DataArray, index: int, gdal_threads: str) -> str:
+                """
+                Worker function executed during both Fast-Path and Safe-Path architectures.
                 
-                # --- NEW: The Corrupted Tile Safety Net ---
-                try:
-                    self.affine_reproject(
-                        input_data=da_2d, 
-                        output_filepath=out_filepath, 
-                        grid_name=target_grid_key, 
-                        resample_keyword=rule, 
-                        logger=None  
-                    )
-                    return out_filepath
-                
-                except Exception as e:
-                    log_execution(logger, f"CRITICAL: GDAL failed to warp slice {index}. File may be corrupt on remote server. Error: {e}", logging.ERROR)
-                    return ""
+                CRITICAL C++ SANDBOXING:
+                We wrap the execution in `rasterio.Env()`. This creates an isolated local 
+                state for GDAL's underlying C binaries. By dynamically passing `GDAL_NUM_THREADS`, 
+                we allow the orchestrator to dictate whether GDAL uses 1 core (during Python Threading) 
+                or all available cores (during GDAL Sequential Threading).
+                """
+                with rasterio.Env(GDAL_NUM_THREADS=gdal_threads, VSI_CACHE="FALSE"):
+                    try:
+                        nodata_val = da_2d.rio.nodata
+                        if nodata_val is not None:
+                            if np.issubdtype(da_2d.dtype, np.integer):
+                                limits = np.iinfo(da_2d.dtype)
+                                if not (limits.min <= nodata_val <= limits.max):
+                                    da_2d = da_2d.astype('float32')
+                            da_2d.rio.write_nodata(nodata_val, inplace=True)
 
-            num_cores = min(os.cpu_count() or 4, len(snapped_list), max_workers)
-            log_execution(logger, f"  -> Firing {num_cores} parallel cores for spatial warping...", logging.INFO)
-            
+                        if '_FillValue' in da_2d.attrs:
+                            del da_2d.attrs['_FillValue']
+
+                        da_2d = self._sanitize_spatial_geometry(da_2d, default_crs="EPSG:4326", logger=None)
+                        out_filepath = os.path.join(cache_dir, f"slice_{index:04d}.tif")
+                        
+                        self.affine_reproject(
+                            input_data=da_2d, 
+                            output_filepath=out_filepath, 
+                            grid_name=target_grid_key, 
+                            resample_keyword=rule, 
+                            num_threads=gdal_threads, # EXPLICITLY PASSED
+                            logger=None  
+                        )
+                        return out_filepath
+                    except Exception as e:
+                        # GRACEFUL DEGRADATION:
+                        # Catch network tile corruption gracefully so the pipeline survives.
+                        log_execution(logger, f"CRITICAL: GDAL failed to warp slice {index}. Error: {e}", logging.ERROR)
+                        return ""
+
             warped_tif_paths = []
-
-            with tracker.track_strain(f"Parallel Warp ({var_name})"):
-                with ThreadPoolExecutor(max_workers=num_cores) as executor:
-                    futures = [executor.submit(_warp_worker, da, i) for i, da in enumerate(snapped_list)]
-                    warped_tif_paths = [future.result() for future in futures]
-                    warped_tif_paths = [p for p in warped_tif_paths if p != ""]
+            
+            # =================================================================================
+            # ARCHITECTURE ROUTER
+            # The script checks the payload size and dynamically chooses the safest strategy.
+            # =================================================================================
+            if slice_size_mb < 50.0:
+                # ---------------------------------------------------------
+                # FAST PATH: Parallel Slices (Python-Level Threading)
+                # ---------------------------------------------------------
+                # Small payloads avoid C++ Threading Chunking Overhead by routing multiple
+                # slices simultaneously across Python threads.
+                log_execution(logger, "  -> Small payload detected. Utilizing high-speed parallel slice warping.", logging.INFO)
+                num_python_threads = min(os.cpu_count() or 4, len(snapped_list), max_workers)
+                
+                with tracker.track_strain(f"Parallel Slice Warp ({var_name})"):
+                    from concurrent.futures import ThreadPoolExecutor
+                    with ThreadPoolExecutor(max_workers=num_python_threads) as executor:
+                        futures = [
+                            executor.submit(_warp_worker, da, i, "1") 
+                            for i, da in enumerate(snapped_list)
+                        ]
+                        warped_tif_paths = [p for p in (f.result() for f in futures) if p != ""]
+            
+            else:
+                # ---------------------------------------------------------
+                # SAFE PATH: Parallel Pixels (C++ Level Threading)
+                # ---------------------------------------------------------
+                # Massive continental payloads route sequentially through Python to avoid 
+                # C++ RAM collision (Segmentation Faults), but unlock maximum GDAL CPU cores natively.
+                log_execution(logger, "  -> Massive payload detected. Utilizing ultra-stable sequential multi-core warping.", logging.INFO)
+                num_gdal_threads = str(min(os.cpu_count() or 4, max_workers))
+                
+                with tracker.track_strain(f"Sequential Multi-Core Warp ({var_name})"):
+                    for i, da in enumerate(snapped_list):
+                        result_path = _warp_worker(da, i, num_gdal_threads)
+                        if result_path != "":
+                            warped_tif_paths.append(result_path)
 
             # ==========================================
-            # 4. Robust 3D Re-assembly (Anonymous Stacking)
+            # 4. Robust 3D Re-assembly 
             # ==========================================
             aligned_slices = []
             log_execution(logger, f"  -> Reassembling 3D {var_name} cube from warped slices...", logging.INFO)
@@ -531,15 +571,13 @@ class spatiotemporal_cube(spatial_engine, ABC):
                 combined_da = combined_da.load()
                 
             # ==========================================
-            # THE DISK SPILL (Nested Directory Export)
+            # THE DISK SPILL 
             # ==========================================
             log_execution(logger, f"  -> Spilling {var_name} to nested directory cache...", logging.INFO)
             
-            # Construct the dynamic path: ./base_dir/cube_name/dataset_name/level/
             level_dir = os.path.join(base_dir, cube_name, dataset_name, level)
             os.makedirs(level_dir, exist_ok=True)
             
-            # Safely encapsulate the named array into a Dataset for writing
             export_ds = combined_da.to_dataset(name=var_name)
             
             if export_format == 'zarr':
@@ -549,30 +587,27 @@ class spatiotemporal_cube(spatial_engine, ABC):
                 var_cache_path = os.path.join(level_dir, f"{var_name}.nc")
                 export_ds.to_netcdf(var_cache_path, format="NETCDF4")
             
-            # Map the exact variable name to its new physical file path in the catalog
             level_reprojected_paths[level][var_name] = var_cache_path
             
-            # --- Safe Pythonic Garbage Collection ---
             xr.backends.file_manager.FILE_CACHE.clear()
-            
             del raw_fetched_data
             del da_list
             del snapped_list
             del aligned_slices
             del combined_da
             del export_ds
+            import gc
             gc.collect()
 
-            # --- Macro sleep for network cooldown ---
             cooldown_seconds = 30
-            log_execution(logger, f"  -> Network cooldown: Sleeping for {cooldown_seconds}s to respect CHELSA rate limits...", logging.INFO)
+            log_execution(logger, f"  -> Network cooldown: Sleeping for {cooldown_seconds}s...", logging.INFO)
             import time
             time.sleep(cooldown_seconds)
 
             tracker.log_usage(f"END Processing {var_name}")
 
         # ==========================================
-        # 5. Pipeline Finalization & Catalog Generation
+        # 5. Pipeline Finalization 
         # ==========================================
         log_execution(logger, "\nValidating Generated Data Cube...", logging.INFO)
         
@@ -584,5 +619,4 @@ class spatiotemporal_cube(spatial_engine, ABC):
             
         log_execution(logger, f"=== Data Cube Generation Complete ({total_files} files written to disk) ===", logging.INFO)
         
-        # Return the lightweight path catalog instead of a massive merged Xarray object
         return level_reprojected_paths

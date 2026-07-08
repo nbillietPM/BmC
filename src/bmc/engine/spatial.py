@@ -596,6 +596,7 @@ class spatial_engine():
         resample_keyword: str = "bilinear",
         compress_mode: str = "lzw",
         memory_limit_bytes: int = 4096,
+        num_threads: str = "ALL_CPUS",
         logger: Optional[logging.Logger] = None
     ) -> xr.DataArray:
         """
@@ -622,14 +623,13 @@ class spatial_engine():
         compress_mode : str, optional
             The GDAL creation option for output compression. Default is ``"lzw"``.
             * ``"lzw"``: Fast read/write, lossless. A highly compatible classic standard.
-            * ``"deflate"``: The industry workhorse. Lossless, yields slightly better compression than LZW.
-            * ``"zstd"``: Modern and extremely fast lossless compression (requires compatible GDAL build).
-            * ``"packbits"``: Very fast run-length encoding. Effective only for categorical masks.
-            * ``"lerc"``: Efficient lossy compression for continuous floating-point analytical data.
-            * ``"jpeg"`` / ``"webp"``: Lossy compression strictly for visual RGB imagery.
+            * ``"deflate"``: The industry workhorse. Lossless, yields slightly better compression.
         memory_limit_bytes : int, optional
             The maximum virtual memory limit (in MB) allocated to the GDAL Warp operation. 
             Default is ``4096`` (4GB).
+        num_threads : str, optional
+            The number of CPU cores allocated explicitly to the underlying GDAL C++ engine.
+            Set dynamically by the orchestrator to prevent thread collisions. Default is ``"ALL_CPUS"``.
         logger : logging.Logger, optional
             The logger instance to use for recording execution messages. Default is ``None``.
 
@@ -650,29 +650,6 @@ class spatial_engine():
         snapping to the output bounding box. It forces the projected dataset to expand outward 
         (using `np.floor` for minimums and `np.ceil` for maximums) until its edges land precisely 
         on the integer-aligned pixel boundaries of the master grid.
-
-        Examples
-        --------
-        Warping directly from a file path (highly efficient for large physical files):
-
-        >>> reprojected_da = cube.affine_reproject(
-        ...     input_data="raw_data/elevation_model.tif",
-        ...     output_filepath="processed/elevation_1km.tif",
-        ...     grid_name="EEA_1km",
-        ...     resample_keyword="bilinear",
-        ...     compress_mode="deflate"
-        ... )
-
-        Warping an in-memory or lazy xarray object (the function handles the temporary I/O):
-
-        >>> my_array = xr.open_dataarray("temp_data.nc")
-        >>> reprojected_da = cube.affine_reproject(
-        ...     input_data=my_array,
-        ...     output_filepath="processed/temp_data_snapped.tif",
-        ...     grid_name="Global_Equal_Area_500m",
-        ...     resample_keyword="nearest",
-        ...     memory_limit_bytes=8192
-        ... )
         """
         log_execution(logger, f"Preparing out-of-core reprojection to {grid_name}...", logging.INFO)
         
@@ -700,10 +677,11 @@ class spatial_engine():
                 # =================================================================
                 # THREAD-SAFE TEMPORARY FILE GENERATION
                 # =================================================================
-                # Generates a completely unique UUID for this specific thread's operation
+                import tempfile
+                import uuid
                 unique_hash = uuid.uuid4().hex
-                # Safely writes to the Linux /tmp/ directory
-                temp_file = os.path.join(tempfile.gettempdir(), f"temp_warp_input_{unique_hash}.tif")
+                # Safely write to the OS temporary directory so orphans are cleaned automatically
+                temp_file = os.path.join(tempfile.gettempdir(), f"temp_warp_input_{unique_hash}.tif") 
                 
                 input_data.rio.to_raster(temp_file, 
                                          tiled=True, 
@@ -756,7 +734,7 @@ class spatial_engine():
                                  'TILED=YES',
                                  'BIGTIFF=YES'],
                 warpMemoryLimit=memory_limit_bytes,
-                warpOptions=['NUM_THREADS=1'] 
+                warpOptions=[f'NUM_THREADS={num_threads}']  # EXPLICIT THREADING APPLIED
             )
             
             gdal.Warp(output_filepath, source_path, options=warp_options)
@@ -775,106 +753,3 @@ class spatial_engine():
                 except OSError:
                     pass             
         return rioxarray.open_rasterio(output_filepath, chunks={'x': 2048, 'y': 2048})
-    
-    def compute_class_fraction(
-        self, 
-        source_data: Union[str, xr.DataArray], 
-        class_value: int, 
-        grid_name: str, 
-        output_filepath: str, 
-        logger: Optional[logging.Logger] = None
-    ) -> str:
-        """
-        Pure spatial math primitive: Isolates a single class and writes its fractional coverage.
-        Automatically routes large disk-based VRTs to pure GDAL streaming, 
-        and small in-memory xarray DataArrays to native xarray math.
-        """
-        import os
-        import tempfile
-        import numpy as np
-        from bmc.utils.logger import log_execution
-        
-        # =====================================================================
-        # BRANCH 1: IN-MEMORY XARRAY (For Small Datasets)
-        # =====================================================================
-        if isinstance(source_data, xr.DataArray):
-            log_execution(logger, f"Processing small DataArray for class {class_value} in RAM...", logging.INFO)
-            
-            nodata_val = source_data.rio.nodata
-            
-            # 1. Create the Binary Mask in RAM
-            mask = (source_data == class_value).astype(np.float32)
-            if nodata_val is not None:
-                mask = mask.where(source_data != nodata_val, np.nan)
-            
-            mask.rio.write_crs(source_data.rio.crs, inplace=True)
-            mask.rio.write_transform(source_data.rio.transform(), inplace=True)
-            mask.rio.write_nodata(np.nan, inplace=True)
-
-            # 2. Route straight to affine_reproject (handles the small I/O dump safely)
-            self.affine_reproject(
-                input_data=mask, 
-                output_filepath=output_filepath,  
-                grid_name=grid_name, 
-                resample_keyword="average",
-                logger=logger
-            )
-            return output_filepath
-
-        # =====================================================================
-        # BRANCH 2: PURE GDAL STREAMING (For Massive VRTs)
-        # =====================================================================
-        elif isinstance(source_data, str):
-            import rasterio
-            
-            # 1. Create a safe physical temp file for the raw un-warped mask
-            fd, temp_mask_path = tempfile.mkstemp(suffix=".tif", prefix="raw_mask_")
-            os.close(fd)
-
-            try:
-                log_execution(logger, f"Streaming VRT blocks to calculate mask for class {class_value}...", logging.INFO)
-                
-                # 2. Stream the VRT directly using GDAL/Rasterio blocks (Zero Dask Overhead)
-                # 2. Stream the VRT directly using GDAL/Rasterio blocks (Zero Dask Overhead)
-                with rasterio.open(source_data) as src:
-                    meta = src.meta.copy()
-                    meta.update({
-                        "driver": "GTiff",  
-                        "dtype": "float32",
-                        "nodata": np.nan,
-                        "compress": "lzw",
-                        "tiled": True,
-                        "blockxsize": 2048,
-                        "blockysize": 2048,
-                        "BIGTIFF": "YES"
-                    })
-                    with rasterio.open(temp_mask_path, "w", **meta) as dst:
-                        for ji, window in src.block_windows(1):
-                            block = src.read(1, window=window)
-                            mask = (block == class_value).astype(np.float32)
-                            
-                            if src.nodata is not None:
-                                mask[block == src.nodata] = np.nan
-                                
-                            dst.write(mask, 1, window=window)
-                            
-                # 3. Hand the physical mask directly to your robust GDAL C++ affine_reproject
-                self.affine_reproject(
-                    input_data=temp_mask_path, 
-                    output_filepath=output_filepath,  
-                    grid_name=grid_name, 
-                    resample_keyword="average",
-                    logger=logger
-                )
-            finally:
-                # 4. Clean up the pre-warp mask file
-                if os.path.exists(temp_mask_path):
-                    try:
-                        os.remove(temp_mask_path)
-                    except OSError as e:
-                        log_execution(logger, f"Warning: Could not delete temp mask {temp_mask_path}: {e}", logging.WARNING)
-                        
-            return output_filepath
-        
-        else:
-            raise TypeError("source_data must be either a string path (for VRTs) or an xarray.DataArray")
