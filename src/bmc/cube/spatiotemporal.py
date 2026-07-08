@@ -484,14 +484,20 @@ class spatiotemporal_cube(spatial_engine, ABC):
                 da_2d = self._sanitize_spatial_geometry(da_2d, default_crs="EPSG:4326", logger=None)
                 out_filepath = os.path.join(cache_dir, f"slice_{index:04d}.tif")
                 
-                self.affine_reproject(
-                    input_data=da_2d, 
-                    output_filepath=out_filepath, 
-                    grid_name=target_grid_key, 
-                    resample_keyword=rule, 
-                    logger=None  
-                )
-                return out_filepath
+                # --- NEW: The Corrupted Tile Safety Net ---
+                try:
+                    self.affine_reproject(
+                        input_data=da_2d, 
+                        output_filepath=out_filepath, 
+                        grid_name=target_grid_key, 
+                        resample_keyword=rule, 
+                        logger=None  
+                    )
+                    return out_filepath
+                
+                except Exception as e:
+                    log_execution(logger, f"CRITICAL: GDAL failed to warp slice {index}. File may be corrupt on remote server. Error: {e}", logging.ERROR)
+                    return ""
 
             num_cores = min(os.cpu_count() or 4, len(snapped_list), max_workers)
             log_execution(logger, f"  -> Firing {num_cores} parallel cores for spatial warping...", logging.INFO)
@@ -502,6 +508,7 @@ class spatiotemporal_cube(spatial_engine, ABC):
                 with ThreadPoolExecutor(max_workers=num_cores) as executor:
                     futures = [executor.submit(_warp_worker, da, i) for i, da in enumerate(snapped_list)]
                     warped_tif_paths = [future.result() for future in futures]
+                    warped_tif_paths = [p for p in warped_tif_paths if p != ""]
 
             # ==========================================
             # 4. Robust 3D Re-assembly (Anonymous Stacking)
