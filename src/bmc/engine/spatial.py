@@ -22,6 +22,8 @@ from rasterio.warp import transform_bounds
 from rasterio.transform import from_origin
 from rasterio.enums import Resampling
 
+gdal.UseExceptions()
+
 class spatial_engine():
     """
     The fundamental spatial physics and geometric transformation engine.
@@ -672,9 +674,6 @@ class spatial_engine():
         ...     memory_limit_bytes=8192
         ... )
         """
-        # Enable errors
-        gdal.UseExceptions() 
-        
         log_execution(logger, f"Preparing out-of-core reprojection to {grid_name}...", logging.INFO)
         
         # Fetch Master Grid specs
