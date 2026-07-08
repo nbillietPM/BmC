@@ -704,7 +704,7 @@ class spatial_engine():
                 # Generates a completely unique UUID for this specific thread's operation
                 unique_hash = uuid.uuid4().hex
                 # Safely writes to the Linux /tmp/ directory
-                temp_file = os.path.join(tempfile.gettempdir(), f"temp_warp_input_{unique_hash}.tif"
+                temp_file = os.path.join(tempfile.gettempdir(), f"temp_warp_input_{unique_hash}.tif")
                 
                 input_data.rio.to_raster(temp_file, 
                                          tiled=True, 
