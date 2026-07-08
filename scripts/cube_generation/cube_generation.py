@@ -3,6 +3,9 @@ import os
 import logging
 from bmc.cube.bmd import bmd_cube
 
+import faulthandler
+faulthandler.enable()
+
 # Dynamically resolve the absolute path to the catalog based on this script's location
 # __file__ is the path to cube_generation.py
 script_dir = os.path.dirname(os.path.abspath(__file__))
