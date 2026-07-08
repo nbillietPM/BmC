@@ -1,120 +1,175 @@
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import shapely.geometry
 import pygbif
-import pandas as pd
-import os
-import itertools
-from functools import lru_cache
-import shapely
-import json
-from bmc.utils import credentials
-import time 
+from concurrent.futures import ThreadPoolExecutor
+from bmc.datasource.gbif import interface
 
-def read_species_names(inpFile, inpPath="", sep=","):
-    """
-    A function to read in the names of different species of interest that are stored in a csv file.
-    This function provides automatic formatting
+def resolve_taxonomic_columns(target_level: str) -> list[str]:
+    """Map a starting taxonomic rank level down to the terminal species rank.
 
-    Args:
-        inp_file (str): The name for the file containing all the species names
-        inp_path (str, optional): Path where the input file is stored. The default is empty and will be read from the working directory
-        sep (str, optional): The separator character used in between species names. The standard used is ',', i.e. comma separated values
-    Returns:
-        species_names (pd.Dataframe): A dataframe containing all the relevant information stored in the GBIF taxonomic backbone
-    """
-    with open(os.path.join(inpPath, inpFile), "r") as f:
-        fileLines = f.readlines()
-    #Read lines up until second last character to drop '\n' new line command
-    #Split the lines based on the used separator in the file
-    species_names = [line[:-2].split(sep) for line in fileLines]
-    #Convert list of lists into a single list
-    species_names = list(itertools.chain.from_iterable(species_names))
-    #Trim whitespace from the names
-    species_names = [name.strip() for name in species_names]
-    #Remove the empty elements from the list
-    species_names = list(filter(None, species_names))
-    #Remove duplicates and return list of unique species
-    return list(set(species_names))
+    This function identifies the index of a specified target taxonomic rank within
+    the standard Linnaean hierarchy and generates a downstream slice of corresponding
+    GBIF SQL schema identifier key columns.
 
-def extract_keys_dwc(inp_file, inp_path="", sep="\t", encoding="utf-8"):
-    """
-    Extract the usagekeys from a Darwin Core archive
+    Parameters
+    ----------
+    target_level : str
+        The biological rank level to start extracting keys from. Must be one of:
+        'kingdom', 'phylum', 'class', 'order', 'family', 'genus', 'species'.
 
-    Args
-        inp_file (str): the file containing the taxonomic information 
-        inp_path (str, optional): The path towards the darwin core taxon file. Standard value is the current working directory
-        sep (str, optional): Separator used in the inp_file. Standard separator used in the tab value 
-        encoding (str, optional): Encoding used within the file. Standard encoding is utf-8
     Returns
-        usageKeys (list<str>): A list containing the usageKeys described within the archive. These keys are multidigit strings
+    -------
+    list of str
+        A list of GBIF SQL integer identifier column names spanning from the target
+        level down to 'speciesKey'.
+
+    Raises
+    ------
+    ValueError
+        If the `target_level` string does not match any recognized rank in the
+        canonical Linnaean hierarchy.
+
+    Examples
+    --------
+    >>> resolve_taxonomic_columns("phylum")
+    ['phylumKey', 'classKey', 'orderKey', 'familyKey', 'genusKey', 'speciesKey']
+
+    >>> resolve_taxonomic_columns("GENUS  ")
+    ['genusKey', 'speciesKey']
+
+    >>> resolve_taxonomic_columns("")
+    ['speciesKey']
     """
-    #Read in the DwC file immediately as a DF with a tab separator and utf8 encoding
-    dwc_df = pd.read_csv(os.path.join(inp_path, inp_file), sep="\t", encoding="utf8")
-    #Extract the usageKey from the taxonID field in the dataframe
-    usageKeys = [key.split("/")[-1] for key in dwc_df["taxonID"]]
-    return usageKeys
-
-#Decorator to allow the function to cache its result
-@lru_cache(maxsize=None)
-def lookup_backbone_single(name: str):
-    """Cached single-name GBIF backbone lookup."""
-    return pygbif.species.name_backbone(name)
-
-def lookup_backbone(name_list, max_workers=8):
-    """Parallel backbone lookup with caching."""
-    with ThreadPoolExecutor(max_workers=max_workers) as ex:
-        return list(ex.map(lookup_backbone_single, name_list))
+    rank_hierarchy = ["kingdom", "phylum", "class", "order", "family", "genus", "species"]
+    
+    if not target_level:
+        return ["speciesKey"]
         
-def fetch_taxon_info(inp_file, 
-                     inp_path="", 
-                     out_file="", out_path="", 
-                     sep=",", 
-                     mismatch_file= "", 
-                     keep_higherrank=False,
-                     keep_fuzzy = False,
-                     max_workers = 8):
-    """
-    A function that reads in a list of species names and than retrieves all the relevant information from the GBIF taxonomic backbone. 
-    The dataframe containing all the taxonomic data is than formatted to store the taxonKey that is used for the most general name within the column 'acceptedUsageKey'.
+    target_level = target_level.lower().strip()
+    if target_level not in rank_hierarchy:
+        raise ValueError(f"Unknown taxonomic level target: '{target_level}'")
+        
+    start_idx = rank_hierarchy.index(target_level)
+    selected_ranks = rank_hierarchy[start_idx:]
+    selected_keys = [f"{rank}Key" for rank in selected_ranks]
+            
+    return selected_keys
 
-    Args:
-        inp_file (str): The name for the file containing all the species names
-        inp_path (str, optional): Path where the input file is stored. The default is empty and will be read from the working directory
-        out_file (str): The name for the file to which the taxonomic information will be written to. If nothing is provided than the result will not be saved
-        out_path (str, optional): Path where the output file will be stored. The default is empty and will be written to the working directory
-        sep (str, optional): Separator used in the input file in between species names
-        mismatch_file (str, optional): File where all the mismatched names should be written to together with the note of the name_backbone function
-        keep_higherrank (bool, optional): Boolean option that allows the removal of higherrank matches in the GBIF taxonomic backbone
-    Returns:
-        taxonomic_df, mismatch_df (pd.Dataframe): A pair of dataframes containing all the relevant information stored in the GBIF taxonomic backbone. The first dataframe is the dataframe with valid matches whereas the second one contains all erroneous matches
+def map_taxonkeys_to_columns(taxon_keys: list[int], max_workers: int = 8) -> dict[str, list[int]]:
+    """Group raw taxon keys into their optimal indexed GBIF SQL column positions.
+
+    Takes an arbitrary array of identifier keys, fetches their structural ranks via parallel
+    API requests, and buckets them into the exact indexed column mappings required for high-speed
+    SQL filtering. Non-major intermediate ranks automatically route to the generic 'taxonKey'.
+
+    Parameters
+    ----------
+    taxon_keys : list of int
+        A collection of raw, unverified GBIF backbone sequence integer keys.
+    max_workers : int, default 8
+        The total allocation of worker threads reserved for execution inside the
+        ThreadPoolExecutor.
+
+    Returns
+    -------
+    dict of (str, list of int)
+        A mapping lookup where keys are valid GBIF SQL column names (e.g., 'classKey')
+        and values are lists of integers belonging to that specific rank.
+
+    Examples
+    --------
+    Map a mixed list containing the Kingdom Archaea (2), Class Insecta (216), 
+    and a specific species of Ladybug (1043084):
+    
+    >>> keys = [2, 216, 1043084]
+    >>> map_taxon_keys_to_columns(keys, max_workers=4)
+    {'kingdomKey': [2], 'classKey': [216], 'speciesKey': [1043084]}
+
+    Notice how duplicate keys and missing keys are handled safely:
+    
+    >>> map_taxon_keys_to_columns([216, 216, None])
+    {'classKey': [216]}
     """
-    #Retrieve names from the file
-    species_names = read_species_names(inp_file, inp_path, sep=sep)
-    #Retrieve information from the GBIF taxonomic backbone
-    taxonomic_info = lookup_backbone(species_names, max_workers=max_workers)
-    #Convert the list of dictionaries to dataframe
-    taxonomic_df = pd.DataFrame(taxonomic_info)
-    taxonomic_df["lookupNames"] = species_names
-    #Extract rows that are None matches and if enabled higherrank matches
-    mismatchTypes = ["NONE",
-                     *(["FUZZY"] if not keep_fuzzy else []),
-                     *(["HIGHERRANK"] if not keep_higherrank else [])]
-    mismatch_indices = taxonomic_df["matchType"].isin(mismatchTypes)
-    if set(mismatch_indices)=={False, True}:
-        print(f"Mismatches encountered of type {set(taxonomic_df['matchType'])}"
-              f"{''.join(f'\nCount {mt}: {sum(taxonomic_df['matchType'] == mt)}' for mt in set(taxonomic_df['matchType']))}")
-    mismatch_df = taxonomic_df[mismatch_indices]
-    #Invert mismatch indices to extract correct matches
-    taxonomic_df = taxonomic_df[~mismatch_indices]
-    #Assert that usageKeys are cast as integers
-    taxonomic_df["acceptedUsageKey"] = taxonomic_df["acceptedUsageKey"].fillna(taxonomic_df["usageKey"])
-    # Assure that the keys are stored and represented as integers
-    taxonomic_df["acceptedUsageKey"] = taxonomic_df["acceptedUsageKey"].astype(int)
-    #If an out_file is specified than the taxonomic info will be written to a file of said name
-    if out_file != "":
-        taxonomic_df.to_csv(os.path.join(out_path, out_file), index=False)
-    if mismatch_file != "":
-        mismatch_df[["matchType", "note", "scientificName", "lookupNames"]].to_csv(os.path.join(out_path, mismatch_file), index=False)
-    return taxonomic_df, mismatch_df
+    if not taxon_keys:
+        return {}
+        
+    unique_keys = list(set(int(k) for k in taxon_keys if k))
+    
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        records = list(executor.map(interface.lookup_usage_single, unique_keys))
+        
+    rank_to_column = {
+        "KINGDOM": "kingdomKey",
+        "PHYLUM": "phylumKey",
+        "CLASS": "classKey",
+        "ORDER": "orderKey",
+        "FAMILY": "familyKey",
+        "GENUS": "genusKey",
+        "SUBGENUS": "subgenusKey",
+        "SPECIES": "speciesKey"
+    }
+    
+    column_mapping = {}
+    
+    for key, record in zip(unique_keys, records):
+        if record and "rank" in record:
+            rank = record["rank"].upper()
+            column_name = rank_to_column.get(rank, "taxonKey")
+        else:
+            column_name = "taxonKey"
+            
+        if column_name not in column_mapping:
+            column_mapping[column_name] = []
+        column_mapping[column_name].append(key)
+        
+    return column_mapping
+
+def bbox2polygon_wkt(bbox: tuple[float, float, float, float]) -> str:
+    """Convert a bounding box coordinate tuple into an OGC standard WKT Polygon string.
+
+    Parameters
+    ----------
+    bbox : tuple of float
+        A 4-element numeric tuple indicating geographic bounds specified in the strict order:
+        (min_x, min_y, max_x, max_y) or equivalently (min_lon, min_lat, max_lon, max_lat).
+
+    Returns
+    -------
+    str
+        The string representation conforming to Well-Known Text (WKT) geometry
+        standards (e.g., 'POLYGON ((...))').
+
+    Examples
+    --------
+    Convert a bounding box over Aarschot, Belgium into WKT format:
+    
+    >>> bounding_box = (4.8, 50.9, 4.9, 51.0)
+    >>> bbox2polygon_wkt(bounding_box)
+    'POLYGON ((4.9 50.9, 4.9 51, 4.8 51, 4.8 50.9, 4.9 50.9))'
+    """
+    polygon = shapely.geometry.box(*bbox)
+    return polygon.wkt
+
+GBIF_GRIDS = ["EEA", "EUROSTAT", "EQDG", "DMSG", "ISEA3H", "MGRS"]
+
+GBIF_GRID_FUNCTIONS = [
+    "GBIF_EEARGCode", 
+    "GBIF_EuroStatCode", 
+    "GBIF_EQDGCode", 
+    "GBIF_DMSGCode",     
+    "GBIF_ISEA3HCode",   
+    "GBIF_MGRSCode"
+]
+
+# Updated based on GBIF documentation specifications
+GBIF_GRID_RESOLUTIONS = [
+    [25, 100, 250, 1000, 2000, 5000, 10000, 50000, 100000],  # EEA
+    [500, 1000, 2000, 5000, 10000, 20000, 50000, 100000],    # EUROSTAT
+    list(range(0, 8)),                                       # EQDG (Levels 0-7)
+    [i for i in range(1, 3601) if 3600 % i == 0],            # DMSG (All divisors of 3600)
+    list(range(1, 23)),                                      # ISEA3H
+    [0, 1, 10, 100, 1000, 10000, 100000]                     # MGRS
+]
+
 
 GBIF_COLUMNS = [
     "gbifid", "accessrights", "bibliographiccitation", "language", "license",
@@ -183,180 +238,331 @@ GBIF_COLUMNS = [
     "eventdatelte"
 ]
 
-GBIF_GRIDS = ["EEA", "EQDG", "DMSG", "ISEA3H", "MGRS"]
-GBIF_GRID_FUNCTIONS = ["GBIF_EEARGCode", "GBIF_EQDGCode", "GBIF_ISEA3HCode","GBIF_DMSGCode", "GBIF_MGRSCode"]
-GBIF_GRID_RESOLUTIONS = [[25, 100, 250, 1000, 10000, 50000,100000],
-                    list(range(0,8)),
-                    [3600, 1800, 900, 600, 300, 150, 60, 30],
-                    list(range(1,23)),
-                    [0, 1, 10, 100, 1000, 10000, 100000]]
-
-def bbox2polygon_wkt(bbox):
+def estimate_grid_size_meters(grid: str, resolution: int) -> float:
     """
-    Convert a bbox to a wkt style polygon to use within the GBIF SQL query API
+    Approximates the physical size of a GBIF grid cell in meters.
+    
+    Args:
+        grid (str): The GBIF grid system (e.g., 'EEA', 'DMSG', 'EQDG')
+        resolution (int): The resolution parameter passed to the grid
+        
+    Returns:
+        float: The approximate physical height of the cell in meters.
+    """
+    grid = grid.upper()
+    
+    # 1. Native Metric Grids (1:1 mapping)
+    if grid in ["EEA", "EUROSTAT"]:
+        return float(resolution)
+        
+    # 2. Degree-Minute-Second Grid (Resolution is in arc-seconds)
+    elif grid == "DMSG":
+        # 1 degree = 111,320 meters. 1 degree = 3600 arc-seconds.
+        meters_per_second = 111320.0 / 3600.0
+        return float(resolution * meters_per_second)
+        
+    # 3. Extended Quarter-Degree Grid (Resolution is exponential levels)
+    elif grid == "EQDG":
+        # Level 0 = 1 degree. Level 1 = 0.5 deg. Level 2 = 0.25 deg...
+        degree_span = 1.0 / (2 ** resolution)
+        return float(degree_span * 111320.0)
+        
+    else:
+        raise NotImplementedError(f"Automated metric mapping for {grid} is not supported.")
+    
+def format_column_selects(columns: list[str], 
+                          col_backbone: bool = False, 
+                          col_uuid: str = '7ddf754f-d193-4cc9-b351-99906754a03b') -> list[str]:
+    """
+    Format column names for GBIF queries, mapping backbone JSON to standard column names.
+    """
+    reserved_columns = {"group", "order", "type", "references", "class", "language", "year", "month", "day"}
+    
+    taxonomic_terms = {
+        "kingdom", "kingdomkey", "phylum", "phylumkey", "class", "classkey",
+        "order", "orderkey", "family", "familykey", "genus", "genuskey",
+        "species", "specieskey", "scientificname", "taxonkey", "acceptedtaxonkey"
+    }
 
-    Args
-        bbox (tuple<float>): A tuple of floats corresponding to (longitude_min, latitude_min, longitude_max, latitude_max)
+    formatted_columns = []
+    
+    for col in columns:
+        col_lower = col.lower()
+        
+        # Determine the SQL-safe name up front (e.g., "order" vs genus)
+        safe_name = f'"{col_lower}"' if col_lower in reserved_columns else col_lower
+        
+        if col_backbone and col_lower in taxonomic_terms:
+            # Output: classificationdetails['...']['genus'] AS genus
+            # Or:     classificationdetails['...']['order'] AS "order"
+            formatted_columns.append(f"classificationdetails['{col_uuid}']['{col_lower}'] AS {safe_name}")
+        else:
+            # Output standard column with quotes if necessary
+            formatted_columns.append(safe_name)
+                
+    return formatted_columns
+
+def format_taxonomic_filters(taxon_keys: list[int | str] | dict[str, list[int | str]], 
+                             col_backbone: bool = False,
+                             col_uuid: str = '7ddf754f-d193-4cc9-b351-99906754a03b') -> str:
+    """
+    Format taxonomic WHERE clauses, supporting standard integer keys or CoL backbone string keys.
+    Accepts a flat list (defaults to 'taxonkey') or a dictionary mapping specific ranks to keys.
+    """
+    if not taxon_keys:
+        return ""
+    
+    # Normalize input: if it's a flat list, assume it belongs to the base 'taxonkey'
+    if isinstance(taxon_keys, list):
+        filters = {'taxonkey': taxon_keys}
+    elif isinstance(taxon_keys, dict):
+        filters = taxon_keys
+    else:
+        raise ValueError("taxon_keys must be a list or a dictionary.")
+
+    sub_clauses = []
+    
+    for col_name, keys in filters.items():
+        if not keys:
+            continue
+            
+        col_lower = col_name.lower()
+        
+        if col_backbone:
+            # CoL backbone: requires JSON map syntax and single-quoted string keys
+            formatted_keys = [f"'{str(k)}'" for k in keys]
+            col_expr = f"classificationdetails['{col_uuid}']['{col_lower}']"
+        else:
+            # Standard GBIF syntax
+            # Safely quote strings if alphanumeric CoL keys are passed without the backbone flag,
+            # otherwise just stringify the integers.
+            formatted_keys = [f"'{k}'" if isinstance(k, str) and not str(k).isdigit() else str(k) for k in keys]
+            col_expr = col_name
+
+        sub_clauses.append(f"{col_expr} IN ({', '.join(formatted_keys)})")
+
+    # Guard against empty dictionaries or empty lists inside dictionaries
+    if not sub_clauses:
+        return ""
+
+    # Return single clause without wrapping parentheses, or join multiples with OR
+    if len(sub_clauses) == 1:
+        return sub_clauses[0]
+        
+    return f"({' OR '.join(sub_clauses)})"
+
+def generate_query(taxonKeys: list[int | str] | dict[str, list[int | str]], 
+                   columns: list[str], 
+                   record_type: str, 
+                   wkt_polygon: str,
+                   year_range: int | list[int] | None = None,
+                   month_range: int | list[int] | None = None,
+                   aggregate: bool = False, 
+                   include_distinct_observers: bool = True,
+                   grid: str | bool = False, 
+                   grid_resolution: int | None = None, 
+                   coordinateUncertainty: int = 1000,
+                   max_uncertainty: int | float | str | None = None,
+                   includeUnknownStatus: bool = True,
+                   include_uncertainty: bool = True,
+                   issue_flags: list[str] | None = None,
+                   col_backbone: bool = False,
+                   col_uuid: str = '7ddf754f-d193-4cc9-b351-99906754a03b') -> str:
+    """Generate a syntactically validated SQL string optimized for the GBIF query engine.
+
+    Assembles SELECT, WHERE, and spatial or grid-based GROUP BY clauses into a 
+    pretty-printed, readable SQL string. Includes dynamic bounding box optimization, 
+    fallback coordinate uncertainty handling, and spatial precision filtering.
+
+    Parameters
+    ----------
+    taxonKeys : list of int or str, or dict of (str, list of int or str)
+        Taxonomic criteria. Can be a flat list of IDs or an optimized column dictionary.
+        Accepts standard numeric GBIF keys or alphanumeric CoL string keys.
+    columns : list of str
+        The exact projection data columns to pull from the occurrence catalog.
+    record_type : {'occurrence', 'absence', 'mixed'}
+        Controls selection bounds filtering based on physical presence/absence attributes.
+    wkt_polygon : str
+        An OGC Well-Known Text geometry string defining the spatial bounding mask boundary.
+    year_range : tuple of (int, int), optional
+        An inclusive temporal slicing filter containing (start_year, end_year).
+    aggregate : bool, default False
+        When True, transforms the request into an aggregation query computing total records.
+    include_distinct_observers : bool, default True
+        Appends observer concentration counts to metrics when aggregate is active.
+    grid : str or bool, default False
+        The identifier name of the target spatial indexing grid system (e.g., 'EEA', 'DMSG').
+    grid_resolution : int, optional
+        The cell dimensions or precision settings requested for the selected indexing grid.
+    coordinateUncertainty : int, default 1000
+        Default spatial buffer (in meters) substituted to fill missing values via COALESCE.
+    max_uncertainty : int, float, str, optional
+        Maximum allowed spatial uncertainty in meters. If set to 'auto', it dynamically 
+        calculates the threshold based on the selected grid and resolution.
+    includeUnknownStatus : bool, default True
+        Flags whether rows with a status marked 'UNKNOWN' are captured inside presence filters.
+    include_uncertainty : bool, default True
+        Appends spatial resolution precision columns when working with raw granular records.
+    issue_flags : list of str, optional
+        A custom array of internal SQL screening filters applied to prune out flawed records.
+    col_backbone : bool, default False
+        If True, maps taxonomic columns to the specified CoL backbone dataset UUID via JSON.
+    col_uuid : str, default '7ddf754f-d193-4cc9-b351-99906754a03b'
+        The target dataset key used when `col_backbone` is active.
+
     Returns
-        polygon.wkt (str): The WKT representation of the bbox in polygon format 
+    -------
+    str
+        A multi-line, properly indented SQL statement ready for submission to GBIF.
     """
-    #Read the tuple as a rectangular geometry
-    polygon = shapely.geometry.box(*bbox)
-    return polygon.wkt
+    
+    # ---- INJECT GBIF ID ----
+    if not grid and not aggregate:
+        if "gbifid" not in [col.lower() for col in columns]:
+            columns = ["gbifid"] + columns
 
-def generate_query(taxonKeys, columns, record_type, wkt_polygon,
-                   year_range=None,
-                   aggregate=False, include_distinct_observers = True,
-                   grid=False, grid_resolution=None, coordinateUncertainty=1000,
-                   includeUnknownStatus=True,
-                   include_uncertainty=True,
-                   issue_flags=["hasCoordinate = TRUE", 
-                                "NOT ARRAY_CONTAINS(issue, 'ZERO_COORDINATE')",
-                                "NOT ARRAY_CONTAINS(issue, 'COORDINATE_OUT_OF_RANGE')",
-                                "NOT ARRAY_CONTAINS(issue, 'COORDINATE_INVALID')",
-                                "NOT ARRAY_CONTAINS(issue, 'COUNTRY_COORDINATE_MISMATCH')"]):
-    #----VALIDITY CHECK----
-    #check if all the selected columns are valid columns that can be selected from the occurrence table
+    if issue_flags is None:
+        issue_flags = [
+            "hasCoordinate = TRUE", 
+            "NOT GBIF_STRINGARRAYCONTAINS(occurrence.issue, 'ZERO_COORDINATE', TRUE)",
+            "NOT GBIF_STRINGARRAYCONTAINS(occurrence.issue, 'COORDINATE_OUT_OF_RANGE', TRUE)",
+            "NOT GBIF_STRINGARRAYCONTAINS(occurrence.issue, 'COORDINATE_INVALID', TRUE)",
+            "NOT GBIF_STRINGARRAYCONTAINS(occurrence.issue, 'COUNTRY_COORDINATE_MISMATCH', TRUE)"
+        ]
+
+    # ---- VALIDITY CHECK ----
+    # Note: Assumes GBIF_COLUMNS is available in the global scope of your module
     if not set(columns).issubset(GBIF_COLUMNS):
-        raise ValueError(f"The following column(s) ({set(columns)-set(GBIF_COLUMNS)}) are not present in the GBIF data table") 
-    #check if the requested record type(s) is(are) valid
+        invalid_cols = set(columns) - set(GBIF_COLUMNS)
+        raise ValueError(f"The following column(s) ({invalid_cols}) are not present in the GBIF data table") 
+        
     if record_type.lower() not in ["occurrence", "absence", "mixed"]:
-        raise ValueError(f"Chosen record type {record_type} is invalid. Please choose either 'occurrence' or 'absence'")
-    #Some columns require that we use quotes in order to use due to conflict with reserved Keywords and functions in sql
-    reserved_columns = ["group", "order", "type", "references", "class", "language", "year", "month", "day"]
-    #Format the column names so they are usable in the query
-    quoted_columns = [f'"{col}"' if col in reserved_columns else col for col in columns]
+        raise ValueError(f"Chosen record type '{record_type}' is invalid.")
 
-    #----ISSUES AND CONDITIONS----
-    #--TIME--
-    time_columns = " AND ".join([f'"{col}" IS NOT NULL' for col in columns if col in ["year", "month", "day"]])
-    #If a year range is given check if it formatted in a valid way
-    if year_range:
-        if year_range[0]>year_range[1]:
-            raise ValueError(f"Year range invalid (start_year > end_year). Please give a list [start_year, end_year] where (start_year < end_year)")
-        year_range_str = f'"year" >= {year_range[0]} AND "year" <= {year_range[1]} AND'
-    else:
-        year_range_str = ""
-    #--ISSUES--
-    #Join the issue flags together 
+    # ---- APPLY COLUMN FORMATTER ----
+    quoted_columns = format_column_selects(columns, col_backbone=col_backbone, col_uuid=col_uuid)
+
+    # ---- WHERE CONDITIONS ARRAY INITIALIZATION ----
+    where_conditions = []
+
+    # 1. Bounding Box Pre-Filter (Crucial GBIF Optimization)
+    try:
+        geom = shapely.wkt.loads(wkt_polygon)
+        min_lon, min_lat, max_lon, max_lat = geom.bounds
+        where_conditions.append(f"decimalLatitude >= {min_lat} AND decimalLatitude <= {max_lat}")
+        where_conditions.append(f"decimalLongitude >= {min_lon} AND decimalLongitude <= {max_lon}")
+    except Exception as e:
+        raise ValueError(f"Failed to parse bounding box from wkt_polygon: {str(e)}")
+
+    # 2. Complex Polygon Filter
+    where_conditions.append(f"GBIF_Within('{wkt_polygon}', decimalLatitude, decimalLongitude) = TRUE")
+
+    # 3. Maximum Uncertainty Filter
+    if max_uncertainty is not None:
+        if str(max_uncertainty).lower() == "auto":
+            if not grid or grid_resolution is None:
+                raise ValueError("Cannot set max_uncertainty='auto' without specifying a grid and grid_resolution.")
+            # Note: Assumes estimate_grid_size_meters is defined in your module
+            calculated_threshold = int(estimate_grid_size_meters(grid, grid_resolution))
+            where_conditions.append(f"COALESCE(coordinateUncertaintyInMeters, {coordinateUncertainty}) <= {calculated_threshold}")
+        else:
+            where_conditions.append(f"COALESCE(coordinateUncertaintyInMeters, {coordinateUncertainty}) <= {max_uncertainty}")
+
+    # 4. Time Filter
+    time_columns_filter = " AND ".join([f'"{col}" IS NOT NULL' for col in columns if col in ["year", "month", "day"]])
+    if time_columns_filter:
+        where_conditions.append(time_columns_filter)
+    
+    # 4. Temporal Filters (Year & Month Validation and Generation)
+    # Allows lists (e.g. [start, end]) or tuples interchangeably for robustness
+    if year_range is not None:
+        if isinstance(year_range, (list, tuple)):
+            if len(year_range) != 2:
+                raise ValueError("Year range list must contain exactly two integers: [start_year, end_year].")
+            if year_range[0] > year_range[1]:
+                raise ValueError("Year range interval is invalid (start_year > end_year).")
+            where_conditions.append(f'"year" >= {year_range[0]} AND "year" <= {year_range[1]}')
+        else:
+            where_conditions.append(f'"year" = {year_range}')
+
+    if month_range is not None:
+        if isinstance(month_range, (list, tuple)):
+            if len(month_range) != 2:
+                raise ValueError("Month range list must contain exactly two integers: [start_month, end_month].")
+            if month_range[0] > month_range[1]:
+                raise ValueError("Month range interval is invalid (start_month > end_month).")
+            if not (1 <= month_range[0] <= 12) or not (1 <= month_range[1] <= 12):
+                raise ValueError("Months must be integers between 1 and 12.")
+            where_conditions.append(f'"month" >= {month_range[0]} AND "month" <= {month_range[1]}')
+        else:
+            if not (1 <= month_range <= 12):
+                raise ValueError("Month must be an integer between 1 and 12.")
+            where_conditions.append(f'"month" = {month_range}')
+        
+    # 5. Issue Flags
     if issue_flags:
-        issue_str = " AND ".join(issue_flags)
-    else:
-        issue_str = ""
-    #--OCCURRENCE STATUS--
-    status_map = {"occurrence": ["'PRESENT'"],
-                  "absence": ["'ABSENT'"],
-                  "mixed": ["'PRESENT'", "'ABSENT'"]}
+        where_conditions.extend(issue_flags)
+
+    # ---- OCCURRENCE STATUS ----
+    status_map = {"occurrence": ["'PRESENT'"], "absence": ["'ABSENT'"], "mixed": ["'PRESENT'", "'ABSENT'"]}
     status_values = status_map[record_type.lower()].copy()
     if includeUnknownStatus:
         status_values.append("'UNKNOWN'")
-    status_clause = "occurrenceStatus IN ({})".format(", ".join(status_values))
-    status_str_map = {"occurrence": "occurrences",
-                      "absence": "absences",
-                      "mixed": "frequency"}
-    #----GRID SECTION----
+    where_conditions.append(f"occurrenceStatus IN ({', '.join(status_values)})")
+    
+    status_str_map = {"occurrence": "occurrences", "absence": "absences", "mixed": "frequency"}
+
+    # ---- OPTIMIZED TAXONOMIC FILTER GENERATION ----
+    if taxonKeys:
+        taxa_filter = format_taxonomic_filters(taxonKeys, col_backbone=col_backbone, col_uuid=col_uuid)
+        if taxa_filter:
+            where_conditions.append(taxa_filter)
+
+    # ---- GRID SECTION ----
+    gridding_str = ""
     if grid:
-        #Check if grid is valid
+        # Note: Assumes GBIF_GRIDS, GBIF_GRID_RESOLUTIONS, and GBIF_GRID_FUNCTIONS are available
         if grid.upper() not in GBIF_GRIDS:
-            raise ValueError(f"The specified grid '{grid}' is not a supported grid. Please choose one of the following {GBIF_GRIDS}")
-        #Extract the corresponding idx
+            raise ValueError(f"The specified grid '{grid}' is not a supported grid. Options: {GBIF_GRIDS}")
+            
         grid_idx = GBIF_GRIDS.index(grid.upper())
-        #Check if resolution is valid
         if grid_resolution not in GBIF_GRID_RESOLUTIONS[grid_idx]:
-            raise ValueError(f"The specified resolution '{grid_resolution}' is not a valid option for the selected grid. Please use one of the following option ({GBIF_GRID_RESOLUTIONS[grid_idx]})")
-        #Construct gridding function string 
-        gridding_str = f"""{GBIF_GRID_FUNCTIONS[grid_idx]}({grid_resolution}, 
-                           decimalLatitude, 
-                           decimalLongitude, 
-                           COALESCE(coordinateUncertaintyInMeters, {coordinateUncertainty})) AS {grid.lower()}CellCode"""
+            raise ValueError(f"The specified resolution '{grid_resolution}' is not valid for {grid}.")
+            
+        selected_function = GBIF_GRID_FUNCTIONS[grid_idx]
+        gridding_str = f"{selected_function}({grid_resolution}, decimalLatitude, decimalLongitude, COALESCE(coordinateUncertaintyInMeters, {coordinateUncertainty})) AS {grid.lower()}cellcode"
 
-    #----AGGREGATION----
-    #Return aggregated records based on the selected columns, grid cell code and occurrencestatus
+    # ---- SQL QUERY BUILD (NESTED FORMATTING) ----
+    select_lines = [f"    {col}" for col in quoted_columns]
+    
+    if not aggregate:
+        select_lines.extend(["    decimalLatitude", "    decimalLongitude"])
+        
+    if include_uncertainty and not aggregate:
+        select_lines.append(f"    COALESCE(coordinateUncertaintyInMeters, {coordinateUncertainty}) AS coordinateUncertaintyInMeters")
+        
     if aggregate:
-        #Group based on the columns that where requested, grid cell code and occurrence status
-        group_statement = f'GROUP BY {",".join(quoted_columns)}{","+grid.lower()+"CellCode" if grid else ""}'
-        aggr_statement = f'COUNT(*) AS {status_str_map[record_type]}'
-    distinct_obs_clause = ""
-    if include_distinct_observers and aggregate:
-        distinct_obs_clause = ", COUNT(DISTINCT recordedBy) as distinctObservers"
-    select_uncertainty = include_uncertainty and not aggregate
-    uncertainty_string = f", COALESCE(coordinateUncertaintyInMeters, {coordinateUncertainty}) as coordinateUncertaintyInMeters"
-    #----SQL QUERY BUILD----
-    select_statement = f'''SELECT {",".join(quoted_columns)}
-                           {",decimalLatitude, decimalLongitude" if not aggregate else ""}{uncertainty_string if select_uncertainty else ""}
-                           {","+aggr_statement if aggregate else ""}
-                           {distinct_obs_clause}
-                           {"," +gridding_str if grid else ""} FROM occurrence'''
-    #Filter conditions for the records
-    filter_statement = f"""WHERE GBIF_Within('{wkt_polygon}', decimalLatitude, decimalLongitude) = TRUE
-                           AND {time_columns} 
-                           AND {year_range_str} {issue_str} 
-                           AND taxonKey IN ({','.join(map(str, taxonKeys))}) 
-                           AND {status_clause}"""
-    return f"{select_statement} {filter_statement} {group_statement if aggregate else ""}"
-
-def download_query(gbif_query,
-                   target_dir= "",
-                   max_time=3600,
-                   sleep_time= 30):
-    """
-    Submit a GBIF SQL download request, poll for completion, and save the ZIP file.
-    Automatically creates the target directory if it does not exist.
-    """
-    # ---- Directory existence check and auto-create --------------------------
-    if target_dir:
-        try:
-            os.makedirs(target_dir, exist_ok=True)
-        except Exception as e:
-            raise RuntimeError(
-                f"Could not create target directory '{target_dir}': {e}"
-            )
+        select_lines.append(f"    COUNT(*) AS {status_str_map[record_type]}")
+        if include_distinct_observers:
+            select_lines.append("    COUNT(DISTINCT recordedBy) AS distinctObservers")
+            
+    if grid:
+        select_lines.append(f"    {gridding_str}")
+        
+    select_block = "SELECT\n" + ",\n".join(select_lines)
+    filter_block = "FROM occurrence\nWHERE\n    " + "\n    AND ".join(where_conditions)
+    
+    if aggregate:
+        # Extract the correct alias names for grouping (ignoring the classificationdetails map syntax)
+        reserved_columns = {"group", "order", "type", "references", "class", "language", "year", "month", "day"}
+        group_cols = [f'"{col.lower()}"' if col.lower() in reserved_columns else col.lower() for col in columns]
+        
+        if grid:
+            group_cols.append(f"{grid.lower()}cellcode")
+            
+        group_block = "\nGROUP BY\n    " + ",\n    ".join(group_cols)
     else:
-        target_dir = "."
-
-    # ---- Credentials --------------------------------------------------------
-    creds = credentials.verify_gbif_credentials()
-
-    # ---- Submit GBIF download ----------------------------------------------
-    try:
-        download_key = pygbif.occurrences.download_sql(
-            gbif_query,
-            user=creds["GBIF_USER"],
-            pwd=creds["GBIF_PWD"]
-        )
-    except Exception as e:
-        raise RuntimeError(f"Failed to submit GBIF download: {e}")
-
-    print(f"GBIF download key: {download_key}")
-
-    # ---- Poll download status ----------------------------------------------
-    start = time.time()
-    while True:
-        try:
-            metadata = pygbif.occurrences.download_meta(download_key)
-        except Exception as e:
-            print(f"Warning: metadata fetch failed temporarily: {e}")
-            metadata = {"status": "UNKNOWN"}
-
-        status = metadata.get("status", "UNKNOWN")
-
-        if status == "SUCCEEDED":
-            print("Download succeeded")
-            break
-        elif status in ("FAILED", "KILLED"):
-            raise RuntimeError(f"GBIF download failed with status: {status}")
-
-        if time.time() - start >= max_time:
-            raise TimeoutError(
-                f"GBIF download did not finish within {max_time} seconds. "
-                f"Last status: {status}"
-            )
-
-        time.sleep(sleep_time)
-
-    # ---- Download file to target directory ---------------------------------
-    try:
-        filepath = pygbif.occurrences.download_get(download_key, path=target_dir)
-    except Exception as e:
-        raise RuntimeError(f"Failed to download GBIF file: {e}")
-    return filepath
+        group_block = ""
+        
+    return f"{select_block}\n{filter_block}{group_block}"

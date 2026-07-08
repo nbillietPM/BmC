@@ -1,4 +1,4 @@
-from bmc.datasource.gbif import layer
+#from bmc.datasource.gbif.legacy import layer
 from bmc.cube.spatiotemporal import *
 import yaml
 import os
