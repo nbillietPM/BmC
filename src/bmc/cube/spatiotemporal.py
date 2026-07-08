@@ -21,6 +21,7 @@ import pandas as pd
 import rioxarray
 from osgeo import gdal
 from pyproj import CRS, Transformer
+import rasterio
 from rasterio.warp import transform_bounds
 from rasterio.transform import from_origin
 from rasterio.enums import Resampling
