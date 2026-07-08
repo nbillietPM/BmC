@@ -12,11 +12,10 @@ catalog_path = os.path.abspath(os.path.join(script_dir, "../../meta/chelsa_gp_st
 
 pan_eu_recipe=f"""
 base_dir: /storage/niels/bmc/cube_generation
-cube_name: europe_chelsa_10km_eea
+cube_name: europe_chelsa_10km_eea_debug
 
-export:
-  as_tree: true
-  as_nested_dir: true
+export_as:
+  format: netcdf
 
 spatial:
   target_grid: EEA
@@ -67,23 +66,8 @@ sources:
           bio01: true
           bio02: true
           bio03: true
-          bio04: true
-          bio05: true
-          bio06: true
-          bio07: true
-          bio08: true
-          bio09: true
-          bio10: true
-          bio11: true
-          bio12: true
-          bio13: true
-          bio14: true
-          bio15: true
-          bio16: true
-          bio17: true
-          bio18: true
-          bio19: true
 """
+
 # 1. Parse the string into a dictionary
 recipe = yaml.safe_load(pan_eu_recipe)
 
@@ -99,4 +83,6 @@ except yaml.YAMLError as exc:
 
 
 bmd_engine = bmd_cube()
-bmd_engine.generate_bmd_data("panEU_recipe.yaml", "", max_workers=4)
+bmd_engine.generate_bmd_data("panEU_recipe.yaml", "", max_workers=8)
+bmd_engine.construct_datatree("panEU_recipe.yaml", "")
+bmd_engine.export_tree("panEU_recipe.yaml", "")

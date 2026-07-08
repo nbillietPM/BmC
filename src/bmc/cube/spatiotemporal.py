@@ -557,7 +557,7 @@ class spatiotemporal_cube(spatial_engine, ABC):
             gc.collect()
 
             # --- Macro sleep for network cooldown ---
-            cooldown_seconds = 15
+            cooldown_seconds = 30
             log_execution(logger, f"  -> Network cooldown: Sleeping for {cooldown_seconds}s to respect CHELSA rate limits...", logging.INFO)
             import time
             time.sleep(cooldown_seconds)
