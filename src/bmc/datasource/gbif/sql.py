@@ -5,6 +5,7 @@ from bmc.datasource.gbif import interface
 from bmc.utils import credentials
 from functools import partial
 import time
+import os
 
 def resolve_taxonomic_columns(target_level: str) -> list[str]:
     """Map a starting taxonomic rank level down to the terminal species rank.

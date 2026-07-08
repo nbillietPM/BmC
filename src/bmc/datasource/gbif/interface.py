@@ -201,8 +201,6 @@ def lookup_backbone(
         return list(ex.map(lookup_func, name_list))
 
 
-
-
 def fetch_taxon_info(
     species_names: list[str], 
     out_file: str = "", 
