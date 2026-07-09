@@ -21,7 +21,210 @@ from rasterio.warp import transform_bounds
 from rasterio.transform import from_origin
 from rasterio.enums import Resampling
 
-class spatial_engine():
+class base_spatial_grid():
+    """
+    The foundational spatial truth of the spatiotemporal pipeline.
+    
+    This base class acts as the central source of truth for the physical laws 
+    of the pipeline. It holds the definitive registry of all supported master grids 
+    (Coordinate Reference Systems, resolutions, and absolute bounding boxes). 
+    
+    By abstracting this into a foundational class, both the raster-based 
+    ``spatial_engine`` and the vector-based ``vector_spatial_engine`` inherit 
+    the exact same mathematical blueprints, guaranteeing perfect 1-to-1 pixel 
+    alignment when bridging continuous and discrete datasets.
+
+    Attributes
+    ----------
+    GRID_REGISTRY : dict
+        A master dictionary mapping human-readable grid keys (e.g., "EEA_10km") 
+        to their rigid spatial definitions. Each definition contains:
+        * ``crs``: The EPSG code string.
+        * ``resolution``: The size of a single pixel in native CRS units.
+        * ``bounds``: The definitive absolute extent (minx, miny, maxx, maxy).
+    """
+
+    GRID_REGISTRY = {
+    # ---------------------------------------------------------
+    # EEA Reference Grid (EPSG:3035) - Metric
+    # ---------------------------------------------------------
+    "EEA_10m": {"crs": "EPSG:3035", "resolution": 10, "bounds": (2000000, 1000000, 6000000, 5500000)},
+    "EEA_100m": {"crs": "EPSG:3035", "resolution": 100, "bounds": (2000000, 1000000, 6000000, 5500000)},
+    "EEA_250m": {"crs": "EPSG:3035", "resolution": 250, "bounds": (2000000, 1000000, 6000000, 5500000)},
+    "EEA_500m": {"crs": "EPSG:3035", "resolution": 500, "bounds": (2000000, 1000000, 6000000, 5500000)},
+    "EEA_1km":  {"crs": "EPSG:3035", "resolution": 1000, "bounds": (2000000, 1000000, 6000000, 5500000)},
+    "EEA_10km": {"crs": "EPSG:3035", "resolution": 10000, "bounds": (2000000, 1000000, 6000000, 5500000)},
+
+    # ---------------------------------------------------------
+    # Global Equal Area (EPSG:6933) - Metric
+    # ---------------------------------------------------------
+    "Global_EqualArea_10m": {"crs": "EPSG:6933", "resolution": 10, "bounds": (-17367530, -7314540, 17367530, 7314540)},
+    "Global_EqualArea_100m": {"crs": "EPSG:6933", "resolution": 100, "bounds": (-17367530, -7314540, 17367530, 7314540)},
+    "Global_EqualArea_250m": {"crs": "EPSG:6933", "resolution": 250, "bounds": (-17367530, -7314540, 17367530, 7314540)},
+    "Global_EqualArea_500m": {"crs": "EPSG:6933", "resolution": 500, "bounds": (-17367530, -7314540, 17367530, 7314540)},
+    "Global_EqualArea_1km":  {"crs": "EPSG:6933", "resolution": 1000, "bounds": (-17367530, -7314540, 17367530, 7314540)},
+    "Global_EqualArea_10km": {"crs": "EPSG:6933", "resolution": 10000, "bounds": (-17367530, -7314540, 17367530, 7314540)},
+
+    # ---------------------------------------------------------
+    # Global WGS84 (EPSG:4326) - Decimal Degrees
+    # ---------------------------------------------------------
+    # ~10m at the equator (0.3 arc-seconds)
+    "Global_WGS84_0_3sec": {"crs": "EPSG:4326", "resolution": 0.00008333333333333333, "bounds": (-180.0, -90.0, 180.0, 90.0)},
+    # ~100m at the equator (3 arc-seconds)
+    "Global_WGS84_3sec": {"crs": "EPSG:4326", "resolution": 0.0008333333333333333, "bounds": (-180.0, -90.0, 180.0, 90.0)},
+    # ~250m at the equator (7.5 arc-seconds)
+    "Global_WGS84_7_5sec": {"crs": "EPSG:4326", "resolution": 0.0020833333333333333, "bounds": (-180.0, -90.0, 180.0, 90.0)},
+    # ~500m at the equator (15 arc-seconds)
+    "Global_WGS84_15sec": {"crs": "EPSG:4326", "resolution": 0.004166666666666667, "bounds": (-180.0, -90.0, 180.0, 90.0)},
+    # ~1km at the equator (30 arc-seconds)
+    "Global_WGS84_30sec": {"crs": "EPSG:4326", "resolution": 0.008333333333333333, "bounds": (-180.0, -90.0, 180.0, 90.0)},
+    # ~10km at the equator (5 arc-minutes)
+    "Global_WGS84_5min": {"crs": "EPSG:4326", "resolution": 0.08333333333333333, "bounds": (-180.0, -90.0, 180.0, 90.0)}
+
+    def resolve_grid_registry_key(
+        self, 
+        target_grid: str, 
+        target_resolution: str, 
+        logger: Optional[logging.Logger] = None
+        ) -> str:
+        """
+        Dynamically constructs and validates the master grid key from user configuration.
+
+        Parameters
+        ----------
+        target_grid : str
+            The base coordinate reference system identifier (e.g., "EEA", "Global_WGS84").
+        target_resolution : str
+            The spatial resolution string (e.g., "100m", "10km", "30sec").
+        logger : logging.Logger, optional
+            The logger instance to record the error if the key doesn't exist. Default is None.
+
+        Returns
+        -------
+        grid_key : str
+            The validated dictionary key used to access `self.GRID_REGISTRY`.
+
+        Raises
+        ------
+        ValueError
+            If the concatenated string does not match a predefined grid.
+        """
+        grid_key = f"{target_grid}_{target_resolution}"
+        
+        if grid_key not in self.GRID_REGISTRY:
+            available = "\n - ".join(self.GRID_REGISTRY.keys())
+            error_msg = (
+                f"\n[Spatial Config Error] Attempted to build grid key '{grid_key}', "
+                f"but it does not exist in the registry.\n\n"
+                f"Available Grids:\n - {available}"
+            )
+            # Log the critical error before stopping execution
+            log_execution(logger, error_msg, logging.ERROR)
+            raise ValueError(error_msg)    
+            
+        return grid_key
+
+    def create_aligned_raster_template(
+        self, 
+        sample_bbox: Tuple[float, float, float, float], 
+        grid_name: str
+    ) -> Tuple[xr.DataArray, Tuple[float, float, float, float]]:
+        """
+        Generates an empty, mathematically rigid xarray DataArray template perfectly 
+        snapped to a predefined master grid.
+
+        This method acts as a spatial blueprint generator. It takes a loose, localized 
+        bounding box and forces it to expand outward until its edges perfectly intersect 
+        the integer-aligned pixel boundaries of the master grid. It then generates a 2D 
+        matrix of zeros (with embedded CF-compliant spatial coordinates) that downstream 
+        functions can use as a canvas for raster reprojection or vector fractional burning.
+
+        Parameters
+        ----------
+        sample_bbox : tuple of float
+            The localized region of interest bounds in the format 
+            ``(minx, miny, maxx, maxy)``. These bounds must already be projected 
+            into the native CRS of the target grid.
+        grid_name : str
+            The precise dictionary key corresponding to the target grid defined 
+            in the ``GRID_REGISTRY`` (e.g., "EEA_1km").
+
+        Returns
+        -------
+        template : xarray.DataArray
+            A 2D spatial matrix filled with zeros (dtype: int32). Embedded attributes 
+            include the mathematically derived `x` and `y` pixel center coordinates, 
+            the rioxarray spatial reference topology, and critical metadata strings 
+            (``crs``, ``res``, ``spatial_unit``).
+        aligned_bbox : tuple of float
+            The newly expanded, grid-snapped bounding box in the format 
+            ``(aligned_minx, aligned_miny, aligned_maxx, aligned_maxy)``.
+
+        Raises
+        ------
+        KeyError
+            If the requested ``grid_name`` does not exist within the class 
+            ``GRID_REGISTRY``.
+
+        Notes
+        -----
+        The mathematical snapping relies on the absolute origin (``master_minx``, 
+        ``master_miny``) defined in the registry. 
+        
+        It utilizes ``math.floor()`` for the minimum coordinates and ``math.ceil()`` 
+        for the maximum coordinates. This guarantees that the localized bounding box 
+        only ever grows outward, preventing edge-starvation where geometries resting 
+        on the absolute boundary might otherwise be clipped.
+        """
+        if grid_name not in self.GRID_REGISTRY:
+            raise KeyError(f"Grid '{grid_name}' not found in registry.")
+            
+        master = self.GRID_REGISTRY[grid_name]
+        res = master["resolution"]
+        master_minx, master_miny, master_maxx, master_maxy = master["bounds"]
+        
+        # sample_bbox is (minx, miny, maxx, maxy)
+        s_minx, s_miny, s_maxx, s_maxy = sample_bbox
+        
+        # 1. Snap strictly to the Master Grid intervals
+        aligned_minx = master_minx + math.floor((s_minx - master_minx) / res) * res
+        aligned_miny = master_miny + math.floor((s_miny - master_miny) / res) * res
+        aligned_maxx = master_minx + math.ceil((s_maxx - master_minx) / res) * res
+        aligned_maxy = master_miny + math.ceil((s_maxy - master_miny) / res) * res
+        
+        # 2. Calculate integer dimensions safely
+        width = int(round((aligned_maxx - aligned_minx) / res))
+        height = int(round((aligned_maxy - aligned_miny) / res))
+        
+        # 3. Generate spatial coordinates (Pixel Centers)
+        x_coords = aligned_minx + (np.arange(width) + 0.5) * res
+        y_coords = aligned_maxy - (np.arange(height) + 0.5) * res
+        
+        # 4. Dynamically determine spatial units from the CRS
+        crs_obj = CRS.from_string(master["crs"])
+        spatial_unit = "degrees" if crs_obj.is_geographic else "meters"
+        
+        # 5. Create the DataArray template with robust metadata attributes
+        template = xr.DataArray(
+            data=np.zeros((height, width), dtype=np.int32), 
+            coords={"y": y_coords, "x": x_coords},
+            dims=("y", "x"),
+            attrs={
+                "grid_registry_key": grid_name,
+                "res": res,
+                "spatial_unit": spatial_unit
+            }
+        )
+        
+        # 6. Inject CF-compliant spatial topology FIRST
+        template = template.rio.write_crs(master["crs"])
+        
+        # 7. Assign the text attribute explicitly 
+        template.attrs["crs"] = str(master["crs"])
+        
+        return template, (aligned_minx, aligned_miny, aligned_maxx, aligned_maxy
+
+class spatial_engine(base_spatial_grid):
     """
     The fundamental spatial physics and geometric transformation engine.
 
@@ -44,16 +247,9 @@ class spatial_engine():
     RESAMPLER_DECODER : dict
         Public registry providing reverse-mapping of GDAL integer constants back 
         to human-readable algorithm strings, utilized primarily for clear execution logging.
-    GRID_REGISTRY : dict
-        The master registry of supported target projection frameworks. Contains exact 
-        Coordinate Reference Systems (CRS), absolute metric or degree resolutions, 
-        and mathematically rigid definitive bounding boxes to ensure perfect 
-        pixel alignment across disparate environmental products.
 
     Methods
     -------
-    resolve_grid_registry_key(target_grid, target_resolution, logger=None)
-        Dynamically constructs and validates the master grid key from user configuration.
     build_safe_fetch_envelope(target_grid_name, target_bounds, source_crs_or_grid, source_resolution, pixel_buffer, logger=None)
         Constructs a densified, buffered bounding box guaranteed to encapsulate a target grid safely.
     build_virtual_mosaic(input_folder, output_vrt_path, logger=None)
@@ -117,40 +313,6 @@ class spatial_engine():
     12: 'q3',
     13: 'sum',
     14: 'rms'}
-
-    GRID_REGISTRY = {
-    # ---------------------------------------------------------
-    # EEA Reference Grid (EPSG:3035) - Metric
-    # ---------------------------------------------------------
-    "EEA_100m": {"crs": "EPSG:3035", "resolution": 100, "bounds": (2000000, 1000000, 6000000, 5500000)},
-    "EEA_250m": {"crs": "EPSG:3035", "resolution": 250, "bounds": (2000000, 1000000, 6000000, 5500000)},
-    "EEA_500m": {"crs": "EPSG:3035", "resolution": 500, "bounds": (2000000, 1000000, 6000000, 5500000)},
-    "EEA_1km":  {"crs": "EPSG:3035", "resolution": 1000, "bounds": (2000000, 1000000, 6000000, 5500000)},
-    "EEA_10km": {"crs": "EPSG:3035", "resolution": 10000, "bounds": (2000000, 1000000, 6000000, 5500000)},
-
-    # ---------------------------------------------------------
-    # Global Equal Area (EPSG:6933) - Metric
-    # ---------------------------------------------------------
-    "Global_EqualArea_100m": {"crs": "EPSG:6933", "resolution": 100, "bounds": (-17367530, -7314540, 17367530, 7314540)},
-    "Global_EqualArea_250m": {"crs": "EPSG:6933", "resolution": 250, "bounds": (-17367530, -7314540, 17367530, 7314540)},
-    "Global_EqualArea_500m": {"crs": "EPSG:6933", "resolution": 500, "bounds": (-17367530, -7314540, 17367530, 7314540)},
-    "Global_EqualArea_1km":  {"crs": "EPSG:6933", "resolution": 1000, "bounds": (-17367530, -7314540, 17367530, 7314540)},
-    "Global_EqualArea_10km": {"crs": "EPSG:6933", "resolution": 10000, "bounds": (-17367530, -7314540, 17367530, 7314540)},
-
-    # ---------------------------------------------------------
-    # Global WGS84 (EPSG:4326) - Decimal Degrees
-    # ---------------------------------------------------------
-    # ~100m at the equator (3 arc-seconds)
-    "Global_WGS84_3sec": {"crs": "EPSG:4326", "resolution": 0.0008333333333333333, "bounds": (-180.0, -90.0, 180.0, 90.0)},
-    # ~250m at the equator (7.5 arc-seconds)
-    "Global_WGS84_7_5sec": {"crs": "EPSG:4326", "resolution": 0.0020833333333333333, "bounds": (-180.0, -90.0, 180.0, 90.0)},
-    # ~500m at the equator (15 arc-seconds)
-    "Global_WGS84_15sec": {"crs": "EPSG:4326", "resolution": 0.004166666666666667, "bounds": (-180.0, -90.0, 180.0, 90.0)},
-    # ~1km at the equator (30 arc-seconds)
-    "Global_WGS84_30sec": {"crs": "EPSG:4326", "resolution": 0.008333333333333333, "bounds": (-180.0, -90.0, 180.0, 90.0)},
-    # ~10km at the equator (5 arc-minutes)
-    "Global_WGS84_5min": {"crs": "EPSG:4326", "resolution": 0.08333333333333333, "bounds": (-180.0, -90.0, 180.0, 90.0)}
-}
     
     def __init__(self):
         pass
@@ -282,48 +444,6 @@ class spatial_engine():
             )
             return best_guess
 
-    def resolve_grid_registry_key(
-        self, 
-        target_grid: str, 
-        target_resolution: str, 
-        logger: Optional[logging.Logger] = None
-        ) -> str:
-        """
-        Dynamically constructs and validates the master grid key from user configuration.
-
-        Parameters
-        ----------
-        target_grid : str
-            The base coordinate reference system identifier (e.g., "EEA", "Global_WGS84").
-        target_resolution : str
-            The spatial resolution string (e.g., "100m", "10km", "30sec").
-        logger : logging.Logger, optional
-            The logger instance to record the error if the key doesn't exist. Default is None.
-
-        Returns
-        -------
-        grid_key : str
-            The validated dictionary key used to access `self.GRID_REGISTRY`.
-
-        Raises
-        ------
-        ValueError
-            If the concatenated string does not match a predefined grid.
-        """
-        grid_key = f"{target_grid}_{target_resolution}"
-        
-        if grid_key not in self.GRID_REGISTRY:
-            available = "\n - ".join(self.GRID_REGISTRY.keys())
-            error_msg = (
-                f"\n[Spatial Config Error] Attempted to build grid key '{grid_key}', "
-                f"but it does not exist in the registry.\n\n"
-                f"Available Grids:\n - {available}"
-            )
-            # Log the critical error before stopping execution
-            log_execution(logger, error_msg, logging.ERROR)
-            raise ValueError(error_msg)    
-            
-        return grid_key
 
     def build_safe_fetch_envelope(
         self,

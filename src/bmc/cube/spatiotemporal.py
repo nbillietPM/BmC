@@ -448,3 +448,6 @@ class spatiotemporal_cube(spatial_engine, ABC):
             
         log_execution(logger, "=== Data Cube Framework Generation Complete ===", logging.INFO)
         return final_cubes
+    
+class spatiotemporal_vector_cube():
+    
