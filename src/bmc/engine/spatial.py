@@ -1028,9 +1028,14 @@ class spatial_vector_engine(base_spatial_grid):
         
         # Purge Nulls and Empty Geometries (The Ghosts)
         initial_count = len(gdf)
-        gdf = gdf[gdf.geometry.notnull() & ~gdf.geometry.is_empty].copy()
-        dropped_empty = initial_count - len(gdf)
         
+        # 1. Drop true Nulls/Nones using pandas native dropna (avoids the GeoPandas warning)
+        gdf = gdf.dropna(subset=['geometry'])
+        
+        # 2. Drop structurally empty geometries (e.g., Polygon())
+        gdf = gdf[~gdf.geometry.is_empty].copy()
+        
+        dropped_empty = initial_count - len(gdf)
         if dropped_empty > 0:
             log_execution(logger, f"Dropped {dropped_empty} empty or null geometries.", level=logging.INFO)
 
@@ -1091,3 +1096,4 @@ class spatial_vector_engine(base_spatial_grid):
         log_execution(logger, f"Sanitization complete. Final feature count: {len(gdf)}", level=logging.INFO)
         
         return gdf
+    
