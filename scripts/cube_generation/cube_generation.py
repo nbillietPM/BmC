@@ -101,4 +101,4 @@ except yaml.YAMLError as exc:
 
 
 bmd_engine = bmd_cube()
-bmd_engine.generate_bmd_data("panEU_recipe.yaml", "", max_workers=4)
+bmd_engine.generate_bmd_data("panEU_recipe.yaml", "", max_workers=8)
