@@ -19,6 +19,7 @@ import numpy as np
 import xarray as xr
 import pandas as pd
 import rioxarray
+from rioxarray.enum import Convention
 from osgeo import gdal
 from pyproj import CRS, Transformer
 from rasterio.warp import transform_bounds
@@ -575,6 +576,27 @@ class spatiotemporal_cube(spatial_engine, ABC):
             # ==========================================
             log_execution(logger, f"  -> Spilling {var_name} to nested directory cache...", logging.INFO)
             
+            # --- CRS RE-ASSERTION BLOCK (CF CONVENTION) ---
+            # xarray operations (concat, clip, load) frequently strip CF-compliant metadata.
+            # Here we utilize rioxarray's native CF convention enforcer to rebuild the 
+            # spatial_ref coordinate, grid_mapping, and GeoTransform arrays that QGIS requires.
+
+            # Ensure dimensions are recognized as spatial
+            combined_da = combined_da.rio.set_spatial_dims(x_dim="x", y_dim="y")
+            
+            # Write the CRS strictly using the CF Convention
+            combined_da = combined_da.rio.write_crs(
+                target_crs, 
+                convention=Convention.CF
+            )
+            
+            # Explicitly write the GeoTransform matrix (Critical for NetCDF in QGIS)
+            combined_da = combined_da.rio.write_transform(convention=Convention.CF)
+            
+            # Fallback root attributes for non-CF compliant parsers
+            combined_da.attrs['crs'] = str(target_crs)
+            combined_da.attrs['res'] = float(target_res)
+
             level_dir = os.path.join(base_dir, cube_name, dataset_name, level)
             os.makedirs(level_dir, exist_ok=True)
             
