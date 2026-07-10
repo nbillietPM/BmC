@@ -376,8 +376,8 @@ class spatiotemporal_cube(spatial_engine, ABC):
             self.logger = logger
 
         tracker = ResourceProfiler(log_dir=os.path.join(base_dir, 'logs'))
-
-        log_execution(logger, "\n=== Initiating Out-of-Core Data Lake Generation ===", logging.INFO)
+        log_execution(logger, "You are using the correct version", logging.INFO)
+        log_execution(logger, "\n=== Initiating Out-of-Core Data Cube Generation ===", logging.INFO)
         
         execution_plan = self.generate_execution_plan(recipe, logger)
         if execution_plan.empty:
