@@ -5,8 +5,8 @@ from bmc.lake.wekeo import wekeo_lake
 
 lake_recipe = """
 paths:
-  base_dir: "/storage/niels/bmc"
-  raw_dir: "/storage/niels/bmc/raw/"
+  base_dir: "/storage/niels/bmc/debug/"
+  raw_dir: "/storage/niels/bmc/debug/raw/"
 
 lake_name: "micro_lake"
 
