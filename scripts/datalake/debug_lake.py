@@ -43,7 +43,7 @@ sources:
       CORINE:
         include: true
         productTypes:
-          - - "Corine Land Cover 2018"
+          - "Corine Land Cover 2018"
 """
 
 recipe = yaml.safe_load(lake_recipe)
@@ -52,15 +52,13 @@ lake_dir = recipe["paths"]["base_dir"]
 # 1. Initialize your engine
 lake_engine = wekeo_lake()
 
-# 2. AUTOMATIC INITIALIZATION: Explicitly pass logger=None. 
-# Your code will sense this, automatically configure the file-handler logs, 
-# and tie the output path directly inside "/storage/niels/bmc/logs/micro_lake_generation.log"
+# 2. AUTOMATIC INITIALIZATION: Build the lake sequentially using GDAL C++ threads
 generated_cogs = lake_engine.build_datalake(recipe, logger=None)
 
-# 3. EXTRACTION: Now capture the automatically constructed logger from the engine instance
+# 3. EXTRACTION: Capture the automatically constructed logger from the engine instance
 auto_logger = lake_engine.logger
 
-# 4. ORCHESTRATION: Pass the captured logger to downstream steps so everything writes to the same log file
+# 4. ORCHESTRATION: Pass the captured logger downstream
 is_valid = lake_engine.validate_datalake(lake_dir, logger=auto_logger)
 
 if is_valid:
@@ -68,4 +66,3 @@ if is_valid:
 else:
     if auto_logger:
         auto_logger.error("Datalake QA validation failed! Catalog creation aborted.")
-

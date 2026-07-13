@@ -24,7 +24,6 @@ import xarray as xr
 import pandas as pd
 import rioxarray
 from osgeo import gdal
-from dask.distributed import Client, LocalCluster
 
 from bmc.utils.spatial import build_envelope_from_file
 from bmc.utils.io import parallel_fetch_rasters
@@ -32,6 +31,35 @@ from bmc.utils.logger import log_execution
 
 from bmc.engine.spatial import spatial_engine
 
+import logging
+from typing import Optional, Union, Dict, Any, List, Tuple
+from abc import ABC, abstractmethod
+import gc
+import os
+import zipfile
+import shutil
+import glob
+import uuid
+from pathlib import Path
+
+os.environ["GDAL_CACHEMAX"] = "1024"      # Give GDAL 1GB of RAM for caching
+os.environ["GDAL_NUM_THREADS"] = "ALL_CPUS" # Unleash multi-threading
+os.environ["VSI_CACHE"] = "TRUE"          # Optimize virtual file reading
+os.environ["GDAL_DISABLE_READDIR_ON_OPEN"] = "EMPTY_DIR" # Speeds up file discovery
+
+import numpy as np
+import xarray as xr
+import pandas as pd
+import rioxarray
+from rioxarray import set_options
+from rioxarray.enum import Convention
+from osgeo import gdal
+from shapely.geometry import box
+import geopandas as gpd
+
+from bmc.utils.spatial import transform_bounds
+from bmc.utils.logger import log_execution
+from bmc.engine.spatial import spatial_engine
 
 class spatiotemporal_lake(spatial_engine, ABC):
  
