@@ -19,6 +19,7 @@ import numpy as np
 import xarray as xr
 import pandas as pd
 import rioxarray
+from rioxarray import set_options
 from rioxarray.enum import Convention
 from osgeo import gdal
 from pyproj import CRS, Transformer

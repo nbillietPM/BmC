@@ -226,6 +226,8 @@ class spatiotemporal_lake(spatial_engine, ABC):
         """
         Lake Orchestrator: Iterates classes, computes fractions to disk, and bakes COGs directly.
         """
+        import uuid
+        
         for cls in class_values:
             cls_int = int(cls)
             
@@ -234,9 +236,10 @@ class spatiotemporal_lake(spatial_engine, ABC):
             else:
                 cls_name = f"class_{cls_int}"
 
-            # 1. Create a safe physical temp file on the hard drive
-            fd, temp_path = tempfile.mkstemp(suffix=".tif", prefix="temp_frac_")
-            os.close(fd) 
+            # --- THE FIX ---
+            # 1. Create a safe physical temp file EXPLICITLY on the target hard drive
+            # Bypassing tempfile.mkstemp entirely to guarantee it stays off the RAM disk.
+            temp_path = os.path.join(output_dir, f"temp_frac_{cls_name}_{uuid.uuid4().hex[:8]}.tif")
 
             final_cog_path = os.path.join(output_dir, f"{file_prefix}_{cls_name}.tif")
 
