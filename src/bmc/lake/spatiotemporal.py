@@ -25,7 +25,6 @@ import pandas as pd
 import rioxarray
 from osgeo import gdal
 
-from bmc.utils.spatial import build_envelope_from_file
 from bmc.utils.io import parallel_fetch_rasters
 from bmc.utils.logger import log_execution
 
@@ -57,7 +56,7 @@ from osgeo import gdal
 from shapely.geometry import box
 import geopandas as gpd
 
-from bmc.utils.spatial import transform_bounds
+from bmc.utils.spatial import build_safe_fetch_envelope
 from bmc.utils.logger import log_execution
 from bmc.engine.spatial import spatial_engine
 
