@@ -9,9 +9,22 @@ import logging
 from typing import Optional, Union, Dict, Any, List, Tuple
 from bmc.utils.logger import log_execution
 
+import ot
+import libpysal
+import esda
+
+try:
+    from libpysal.weights import Queen, KNN
+    from esda.moran import Moran
+    HAS_TOPOLOGY = True
+except ImportError:
+    HAS_TOPOLOGY = False
+
+import math
 import numpy as np
 import xarray as xr
 import pandas as pd
+import geopandas as gpd
 import rioxarray
 from osgeo import gdal
 import uuid
@@ -20,6 +33,8 @@ import rasterio
 from rasterio.warp import transform_bounds
 from rasterio.transform import from_origin
 from rasterio.enums import Resampling
+from shapely.geometry import box
+from scipy.spatial import KDTree
 
 class base_spatial_grid():
     """
@@ -1096,4 +1111,444 @@ class spatial_vector_engine(base_spatial_grid):
         log_execution(logger, f"Sanitization complete. Final feature count: {len(gdf)}", level=logging.INFO)
         
         return gdf
+
+    def transform_cellCollection_to_template(
+        self, 
+        source_gdf: gpd.GeoDataFrame, 
+        target_grid_name: str, 
+        value_column: str, 
+        data_type: str = 'discrete', 
+        method: str = 'kdtree',
+        target_bbox: Optional[Tuple[float, float, float, float]] = None,
+        logger: Optional[logging.Logger] = None) -> gpd.GeoDataFrame:
+        """
+        Transforms data from a source GeoDataFrame to match a strictly aligned master grid.
+
+        Parameters:
+        -----------
+        source_gdf : geopandas.GeoDataFrame
+            The input data to transform. Must have a defined CRS.
+        target_grid_name : str
+            The key of the template grid defined in `self.GRID_REGISTRY`.
+        value_column : str
+            The name of the numeric column to aggregate.
+        data_type : str
+            'discrete' (sum whole integers/majority rule) or 'continuous' (areal weighting).
+        method : str
+            'kdtree' (representative point snapping) or 'intersect' (geometric clipping).
+        target_bbox : tuple of float, optional
+            A specific bounding box (minx, miny, maxx, maxy) in the target CRS to force 
+            the grid generation. If None, it dynamically calculates from the source data.
+        """
+        if source_gdf.crs is None:
+            raise ValueError("Source GeoDataFrame is missing a CRS. Cannot project.")
+
+        target_crs = self.GRID_REGISTRY[target_grid_name]["crs"]
+
+        # 1. Determine the Bounding Box
+        if target_bbox is not None:
+            if logger: logger.info(f"Using explicitly provided target bounding box: {target_bbox}")
+            dst_bbox = target_bbox
+        else:
+            if logger: logger.info("No target_bbox provided. Dynamically calculating from source data extent...")
+            src_bounds = source_gdf.total_bounds 
+            dst_bbox = transform_bounds(source_gdf.crs, target_crs, *src_bounds)
+
+        # 2. Fetch the pristine blueprint
+        template_da, _ = self.create_aligned_raster_template(dst_bbox, target_grid_name)
+        res = template_da.attrs["res"]
+        
+        x_centers = template_da.x.values
+        y_centers = template_da.y.values
+
+        # 3. Build the target grid mesh (Pristine Squares)
+        if logger: logger.info(f"Building {res}m target mesh in {target_crs}...")
+        
+        xx, yy = np.meshgrid(x_centers, y_centers)
+        x_flat, y_flat = xx.flatten(), yy.flatten()
+        half_res = res / 2.0
+        
+        polygons = [box(x - half_res, y - half_res, x + half_res, y + half_res) for x, y in zip(x_flat, y_flat)]
+        
+        target_grid_gdf = gpd.GeoDataFrame(
+            {'grid_id': np.arange(len(polygons))}, 
+            geometry=polygons, 
+            crs=target_crs
+        )
+
+        # 4. Prepare Source Data Attributes
+        source_df = source_gdf.copy()
+        source_df['src_uid'] = source_df.index 
+        
+        ignore_cols = ['geometry', value_column, 'src_uid', 'source_area']
+        preserve_cols = [col for col in source_df.columns if col not in ignore_cols]
+        group_cols = ['grid_id'] + preserve_cols
+
+        # ==========================================
+        # STRATEGY A: KDTREE (Representative Point Snapping)
+        # ==========================================
+        if method == 'kdtree':
+            if data_type != 'discrete':
+                raise ValueError("KDTree routing mathematically requires 'discrete' data_type.")
+            if logger: logger.info("Executing KDTree snapping via representative points...")
+                
+            source_points = source_df.copy()
+            source_points["geometry"] = source_points.geometry.representative_point()
+            source_points = source_points.to_crs(target_crs)
+            
+            src_coords = np.column_stack([source_points.geometry.x, source_points.geometry.y])
+            tgt_coords = np.column_stack([x_flat, y_flat]) 
+            
+            tree = KDTree(tgt_coords)
+            _, matched_grid_ids = tree.query(src_coords)
+            source_df['grid_id'] = matched_grid_ids
+            
+            aggregated = source_df.groupby(group_cols)[value_column].sum().reset_index()
+
+        # ==========================================
+        # STRATEGY B: INTERSECT (Geometric Overlay & Areal Weighting)
+        # ==========================================
+        elif method == 'intersect':
+            if logger: logger.info("Executing precise geometric overlay (Warning: RAM intensive)...")
+            
+            source_reprojected = source_df.to_crs(target_crs)
+            source_reprojected['source_area'] = source_reprojected.geometry.area
+            
+            intersections = gpd.overlay(source_reprojected, target_grid_gdf, how='intersection')
+            
+            if intersections.empty:
+                return target_grid_gdf.iloc[0:0].copy()
+                
+            intersections['intersect_area'] = intersections.geometry.area
+
+            if data_type == 'continuous':
+                intersections['weight'] = intersections['intersect_area'] / intersections['source_area']
+                intersections['weighted_val'] = intersections[value_column] * intersections['weight']
+                aggregated = intersections.groupby(group_cols)['weighted_val'].sum().reset_index()
+                aggregated.rename(columns={'weighted_val': value_column}, inplace=True)
+
+            elif data_type == 'discrete':
+                idx_max = intersections.sort_values('intersect_area', ascending=False).groupby('src_uid').head(1)
+                aggregated = idx_max.groupby(group_cols)[value_column].sum().reset_index()
+            else:
+                raise ValueError("Invalid data_type for intersect. Choose 'continuous' or 'discrete'.")
+                
+        else:
+            raise ValueError("Invalid method. Choose 'kdtree' or 'intersect'.")
+
+        # 5. Re-attach the pristine target grid geometries
+        if logger: logger.info("Merging aggregated attributes back to pristine template grid...")
+        target_geometries = target_grid_gdf[['grid_id', 'geometry']]
+        result_grid = target_geometries.merge(aggregated, on='grid_id', how='inner')
+        
+        return result_grid
     
+    def _calculate_distributional_fidelity(
+        self, 
+        orig_gdf: gpd.GeoDataFrame, 
+        targ_gdf: gpd.GeoDataFrame, 
+        value_col: str
+    ) -> dict:
+        r"""
+        Computes the Distributional Fidelity (Value Conservation and Spatial Drift).
+
+        Calculates the Center of Mass (CoM) shift and the Wasserstein (Earth Mover's) 
+        Distance between two spatial distributions. Includes dynamic baseline shifting 
+        to support intensive continuous variables (e.g., negative temperatures).
+
+        Mathematical Formulas
+        ---------------------
+        Center of Mass Shift ($\Delta\vec{c}$):
+        $$\Delta\vec{c}=\sqrt{(x_{t}-x_{o})^2+(y_{t}-y_{o})^2}$$
+        Where $(x_{o},y_{o})$ and $(x_{t},y_{t})$ are the weighted average coordinates 
+        of the original and target feature clouds.
+
+        Wasserstein Distance ($W_2$):
+        $$W_2(\mu,\nu)=\left(\inf_{\gamma\in\Gamma(\mu,\nu)}\int_{M\timesM}d(x,y)^2d\gamma(x,y)\right)^{1/2}$$
+        Where $\mu$ and $\nu$ represent the normalized probability distribution of the measured values.
+
+        Interpretation
+        --------------
+        * value_delta: Absolute difference in the aggregated variable. Values $>0$ indicate dropped data volume.
+        * com_shift_meters: Absolute translation of the dataset's center. $0.0$ is perfect.
+        * wasserstein_meters: The spatial cost to restructure the data. Higher values indicate 
+          severe "smearing" or dislocation of the values across the geometry.
+        """
+        w_orig = orig_gdf[value_col].values.astype(float)
+        w_targ = targ_gdf[value_col].values.astype(float)
+        
+        value_diff = w_orig.sum() - w_targ.sum()
+        
+        if w_orig.sum() == 0 or w_targ.sum() == 0:
+            return {'value_delta': value_diff, 'com_shift_meters': np.nan, 'wasserstein_meters': np.nan}
+
+        # Dynamic Baseline Shift for Intensive/Continuous Variables
+        global_min = min(np.min(w_orig), np.min(w_targ))
+        if global_min < 0:
+            shift_factor = abs(global_min) + 1e-6
+            w_orig = w_orig + shift_factor
+            w_targ = w_targ + shift_factor
+
+        orig_cx = np.average(orig_gdf.geometry.centroid.x.values, weights=w_orig)
+        orig_cy = np.average(orig_gdf.geometry.centroid.y.values, weights=w_orig)
+        targ_cx = np.average(targ_gdf.geometry.centroid.x.values, weights=w_targ)
+        targ_cy = np.average(targ_gdf.geometry.centroid.y.values, weights=w_targ)
+        
+        com_shift = np.sqrt((targ_cx - orig_cx)**2 + (targ_cy - orig_cy)**2)
+        
+        coords_orig = np.column_stack((orig_gdf.geometry.centroid.x, orig_gdf.geometry.centroid.y))
+        coords_targ = np.column_stack((targ_gdf.geometry.centroid.x, targ_gdf.geometry.centroid.y))
+        
+        p_orig = w_orig / w_orig.sum()
+        p_targ = w_targ / w_targ.sum()
+        
+        cost_matrix = ot.dist(coords_orig, coords_targ, metric='euclidean')
+        emd_meters = ot.emd2(p_orig, p_targ, cost_matrix)
+        
+        return {
+            'value_delta': value_diff,
+            'com_shift_meters': com_shift,
+            'wasserstein_meters': emd_meters
+        }
+
+    def _calculate_geometric_fidelity(
+        self, 
+        orig_gdf: gpd.GeoDataFrame, 
+        targ_gdf: gpd.GeoDataFrame
+    ) -> float:
+        r"""
+        Computes the Geometric Fidelity (Shape and Boundary Conservation).
+
+        Dynamically evaluates the Intersection over Union (IoU) depending on the 
+        detected geometry type to quantify footprint warping.
+
+        Mathematical Formulas
+        ---------------------
+        Intersection over Union ($IoU$):
+        $$IoU=\frac{|A\capB|}{|A\cupB|}$$
+        Where $A$ is the original macroscopic footprint and $B$ is the target footprint. 
+        Calculated using area for polygons and length for linestrings.
+
+        Interpretation
+        --------------
+        * mean_iou: Ranges from $0.0$ to $1.0$. 
+          - $1.0$: Perfect boundary preservation.
+          - $<0.8$: Noticeable boundary warping or clipping.
+          - $<0.5$: Severe geometric artefacting.
+        """
+        geom_type = orig_gdf.geometry.iloc[0].geom_type
+        
+        poly_orig = orig_gdf.geometry.unary_union
+        poly_targ = targ_gdf.geometry.unary_union
+        
+        if geom_type in ['Polygon', 'MultiPolygon']:
+            intersection_val = poly_orig.intersection(poly_targ).area
+            union_val = poly_orig.union(poly_targ).area
+        elif geom_type in ['LineString', 'MultiLineString']:
+            intersection_val = poly_orig.intersection(poly_targ).length
+            union_val = poly_orig.union(poly_targ).length
+        else:
+            return np.nan
+            
+        return intersection_val / union_val if union_val > 0 else 0.0
+
+    def _calculate_topological_fidelity(
+        self, 
+        orig_gdf: gpd.GeoDataFrame, 
+        targ_gdf: gpd.GeoDataFrame, 
+        value_col: str
+    ) -> float:
+        r"""
+        Computes Topological Fidelity (Clustering and Neighborhoods).
+
+        Calculates the change in Spatial Autocorrelation (Moran's I) to determine 
+        if local spatial hotspots or data gradients were artificially smoothed out.
+
+        Mathematical Formulas
+        ---------------------
+        Moran's I ($I$):
+        $$I=\frac{N}{W}\frac{\sum_{i}\sum_{j}w_{ij}(x_{i}-\bar{x})(x_{j}-\bar{x})}{\sum_{i}(x_{i}-\bar{x})^2}$$
+        Where $N$ is the number of spatial units, $W$ is the sum of all spatial weights 
+        $w_{ij}$, and $x$ represents the measured values.
+
+        Interpretation
+        --------------
+        * morans_i_delta: Difference between target and original $I$.
+          - $0.0$: Local clustering relationships perfectly preserved.
+          - Highly Negative: Clustered hotspots/gradients were scattered into random noise.
+        """
+        if not HAS_TOPOLOGY or len(orig_gdf) < 4 or len(targ_gdf) < 4:
+            return np.nan
+            
+        geom_type = orig_gdf.geometry.iloc[0].geom_type
+        w_orig = orig_gdf[value_col].values
+        w_targ = targ_gdf[value_col].values
+        
+        try:
+            if geom_type in ['Polygon', 'MultiPolygon']:
+                w_mat_orig = Queen.from_dataframe(orig_gdf, use_index=False)
+                w_mat_targ = Queen.from_dataframe(targ_gdf, use_index=False)
+            else:
+                w_mat_orig = KNN.from_dataframe(orig_gdf, k=4)
+                w_mat_targ = KNN.from_dataframe(targ_gdf, k=4)
+                
+            w_mat_orig.transform = 'r'
+            w_mat_targ.transform = 'r'
+            
+            m_orig = Moran(w_orig, w_mat_orig)
+            m_targ = Moran(w_targ, w_mat_targ)
+            
+            return m_targ.I - m_orig.I
+        except Exception:
+            return np.nan
+
+    def evaluate_transformation_fidelity(
+        self, 
+        orig_gdf: gpd.GeoDataFrame, 
+        targ_gdf: gpd.GeoDataFrame, 
+        value_col: str, 
+        group_cols: list,
+        shared_crs: str = "EPSG:3035",
+        logger: logging.Logger = None
+    ) -> tuple[pd.DataFrame, dict]:
+        """
+        Evaluates the comprehensive spatial fidelity between an original and 
+        transformed GeoDataFrame across multiple dimensions.
+
+        This synthesis function acts as a mathematical Quality Assurance (QA) gate 
+        for spatial pipelines. It stratifies the data using `group_cols` to ensure 
+        "apples-to-apples" comparisons, then computes Distributional, Geometric, 
+        and Topological fidelity metrics. Finally, it aggregates global statistics 
+        and triggers logging warnings if severe data loss, boundary warping, or 
+        spatial drift is detected.
+
+        Parameters
+        ----------
+        orig_gdf : geopandas.GeoDataFrame
+            The original, pre-transformation spatial dataset.
+        targ_gdf : geopandas.GeoDataFrame
+            The transformed, post-regridding spatial dataset.
+        value_col : str
+            The name of the column containing the numeric measurements (e.g., 
+            species occurrences, temperature, pollutant concentration). Used 
+            to calculate mass conservation and weighted centers of mass.
+        group_cols : list of str
+            Columns used to partition the data before evaluation 
+            (e.g., ``['scientificname', 'year', 'month']``). This ensures the 
+            metrics evaluate specific isolated spatial networks rather than the 
+            entire bulk dataset at once.
+        shared_crs : str, optional
+            A metric Coordinate Reference System (EPSG code) into which both datasets 
+            are temporarily projected. This is strictly required to ensure that Earth 
+            Mover's Distance and Area Intersection math operates in flat, real-world 
+            meters regardless of the native projections. Default is ``"EPSG:3035"``.
+        logger : logging.Logger, optional
+            A standard Python logger. If provided, the function will log execution 
+            progress and throw ``[WARNING]`` or ``[CRITICAL]`` alerts if the spatial 
+            distortion exceeds predefined mathematical thresholds.
+
+        Returns
+        -------
+        df_results : pandas.DataFrame
+            A highly detailed, stratum-level breakdown. Contains one row for every 
+            unique combination of `group_cols`, alongside the following metrics:
+            - ``original_value_sum``: Total value mass of the original stratum.
+            - ``value_delta``: Absolute loss or hallucination of values.
+            - ``com_shift_meters``: Distance the Center of Mass drifted.
+            - ``wasserstein_meters``: Total spatial restructuring cost (Earth Mover's).
+            - ``mean_iou``: Intersection over Union of the physical footprint.
+            - ``morans_i_delta``: Change in spatial autocorrelation/clustering.
+        summary_stats : dict
+            High-level global aggregation of the metrics used for pipeline monitoring.
+            Contains keys: ``total_value_delta``, ``avg_com_shift``, ``max_com_shift``, 
+            ``avg_iou``, and ``avg_wasserstein``.
+
+        Notes
+        -----
+        The function applies an automated logging triage based on the calculated 
+        ``summary_stats``.
+
+        * **Warning Level 1 (Data Volume):** 
+          Triggers a ``[CRITICAL]`` error if ``total_value_delta > 1e-6``. This 
+          guarantees that the physical mass or count of your data was perfectly 
+          conserved during the transformation.
+        * **Warning Level 2 (Geometric Destruction):**
+          Triggers a ``[WARNING]`` if ``avg_iou < 0.85`` and a ``[CRITICAL]`` error 
+          if ``avg_iou < 0.6``. 
+          *Note:* If you are intentionally upscaling or downscaling resolution 
+          (e.g., mapping 250m to 500m), a low IoU is mathematically expected 
+          due to the 4x area expansion, and this warning can be safely ignored.
+        * **Warning Level 3 (Spatial Drift):**
+          Triggers a ``[WARNING]`` if the ``avg_com_shift`` exceeds 1000 meters, 
+          indicating that the regridding algorithm dragged your spatial features 
+          unacceptably far from their geographic origins.
+        """
+        log_execution(logger, "Initiating Universal Spatial Fidelity Profiling...", level=logging.INFO)
+
+        orig_proj = orig_gdf.to_crs(shared_crs).copy()
+        targ_proj = targ_gdf.to_crs(shared_crs).copy()
+        
+        results = []
+        groups = orig_proj.groupby(group_cols)
+        
+        for group_keys, orig_group in groups:
+            group_dict = dict(zip(group_cols, group_keys if isinstance(group_keys, tuple) else [group_keys]))
+            
+            query_mask = np.ones(len(targ_proj), dtype=bool)
+            for col, val in group_dict.items():
+                query_mask &= (targ_proj[col] == val)
+            targ_group = targ_proj[query_mask]
+            
+            if targ_group.empty:
+                continue
+
+            dist_metrics = self._calculate_distributional_fidelity(orig_group, targ_group, value_col)
+            geom_iou = self._calculate_geometric_fidelity(orig_group, targ_group)
+            topo_delta = self._calculate_topological_fidelity(orig_group, targ_group, value_col)
+
+            results.append({
+                **group_dict,
+                'original_value_sum': orig_group[value_col].sum(),
+                **dist_metrics,
+                'mean_iou': geom_iou,
+                'morans_i_delta': topo_delta
+            })
+
+        df_results = pd.DataFrame(results)
+
+        # ---------------------------------------------------------
+        # AGGREGATE SUMMARY STATISTICS & LOGGING THRESHOLDS
+        # ---------------------------------------------------------
+        summary_stats = {
+            'total_value_delta': df_results['value_delta'].sum() if not df_results.empty else 0.0,
+            'avg_com_shift': df_results['com_shift_meters'].mean() if not df_results.empty else np.nan,
+            'max_com_shift': df_results['com_shift_meters'].max() if not df_results.empty else np.nan,
+            'avg_iou': df_results['mean_iou'].mean() if not df_results.empty else np.nan,
+            'avg_wasserstein': df_results['wasserstein_meters'].mean() if not df_results.empty else np.nan
+        }
+
+        if not df_results.empty:
+            log_execution(logger, f"Fidelity Profiling Complete. Evaluated {len(df_results)} unique strata.", level=logging.INFO)
+            
+            # Use nan-safe logging for IoU (handles Point geometries gracefully)
+            if not np.isnan(summary_stats['avg_iou']):
+                log_execution(logger, f"Global Average IoU: {summary_stats['avg_iou']:.4f}", level=logging.INFO)
+            
+            log_execution(logger, f"Global Average Drift: {summary_stats['avg_com_shift']:.2f} meters", level=logging.INFO)
+
+            # Warning Level 1: Data Loss / Baseline Shift
+            if abs(summary_stats['total_value_delta']) > 1e-6:
+                log_execution(logger, f"[CRITICAL] Pipeline altered absolute data volume. Net value delta: {summary_stats['total_value_delta']:.4f} units.", level=logging.ERROR)
+
+            # Warning Level 2: Severe Artefacting (Geometric Destruction) - Only flags if IoU is a valid number
+            if not np.isnan(summary_stats['avg_iou']):
+                if summary_stats['avg_iou'] < 0.6:
+                    log_execution(logger, f"[CRITICAL] Average IoU is critically low ({summary_stats['avg_iou']:.2f}). Severe geometric warping occurred.", level=logging.ERROR)
+                elif summary_stats['avg_iou'] < 0.85:
+                    log_execution(logger, f"[WARNING] Moderate boundary distortion detected. Average IoU: {summary_stats['avg_iou']:.2f}.", level=logging.WARNING)
+
+            # Warning Level 3: Unacceptable Spatial Drift
+            if not np.isnan(summary_stats['avg_com_shift']) and summary_stats['avg_com_shift'] > 1000:
+                log_execution(logger, f"[WARNING] High spatial drift detected. Average center of mass shifted by {summary_stats['avg_com_shift']:.2f} meters.", level=logging.WARNING)
+
+        return df_results, summary_stats
