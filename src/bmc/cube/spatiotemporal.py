@@ -1,5 +1,5 @@
 import logging
-from typing import Optional, Union, Dict, Any, List, Tuple
+from typing import Optional, Union, Dict, Any, List, Tuple,  Callable
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
@@ -8,6 +8,7 @@ import gc
 import yaml
 import sys
 import os
+import json
 import shutil
 import zipfile
 import glob
@@ -18,16 +19,34 @@ import xarray as xr
 import pandas as pd
 import rioxarray
 from osgeo import gdal
+import pyproj
 from pyproj import CRS, Transformer
 from rasterio.warp import transform_bounds
 from rasterio.transform import from_origin
 from rasterio.enums import Resampling
+
+import geopandas as gpd
+from typing import Union, Tuple, Optional
+import logging
+from bmc.utils.logger import log_execution
+
+try:
+    import duckdb
+    HAS_DUCKDB = True
+except ImportError:
+    HAS_DUCKDB = False
+try:
+    import dask_geopandas as dask_gpd
+    HAS_DASK = True
+except ImportError:
+    HAS_DASK = False
 
 from bmc.utils.spatial import build_envelope_from_file
 from bmc.utils.io import parallel_fetch_rasters
 from bmc.utils.logger import log_execution
 
 from bmc.engine.spatial import spatial_engine
+from bmc.engine.spatial import spatial_vector_engine
 
 class spatiotemporal_cube(spatial_engine, ABC):
     """
@@ -449,4 +468,253 @@ class spatiotemporal_cube(spatial_engine, ABC):
         log_execution(logger, "=== Data Cube Framework Generation Complete ===", logging.INFO)
         return final_cubes
     
-#class spatiotemporal_vector_cube():
+class spatiotemporal_vector_cube(spatial_vector_engine, ABC):
+
+    def fetch_vector_by_bbox(
+        self,
+        file_path: str, 
+        target_grid_name: str,
+        target_bbox: Tuple[float, float, float, float],
+        engine: str = 'auto',
+        use_dask: bool = False,
+        logger: Optional[logging.Logger] = None
+    ) -> Union[gpd.GeoDataFrame, 'dask_gpd.GeoDataFrame']:
+        """
+        Fetches a spatial subset of a remote or local vector dataset.
+        
+        Parameters
+        ----------
+        file_path : str
+            URL or local path to the vector file (e.g., .parquet, .gpkg, .fgb).
+        target_grid_name : str
+            The precise registry key of the target grid to calculate projection curvature.
+        target_bbox : tuple
+            Strict bounding box in the format (minx, miny, maxx, maxy).
+        engine : str
+            'auto', 'geopandas', or 'duckdb'. 
+        use_dask : bool
+            If True, returns a lazy dask-geopandas dataframe for out-of-core processing.
+        """
+        is_parquet = file_path.lower().endswith(('.parquet', '.geoparquet'))
+        is_remote = file_path.startswith(('http', 's3://'))
+        
+        # 1. Generate the padded envelope BEFORE routing to prevent edge starvation across ALL engines
+        safe_bbox = self.build_safe_fetch_envelope(
+            target_grid_name=target_grid_name, 
+            target_bounds=target_bbox, # The strict metric template bounds
+            source_crs_or_grid="EPSG:4326", 
+            pixel_buffer=2, # Small buffer to capture curved edge polygons
+            logger=logger
+        )
+        safe_minx, safe_miny, safe_maxx, safe_maxy = safe_bbox
+        
+        # ---------------------------------------------------------
+        # DASK OUT-OF-CORE ENGINE
+        # ---------------------------------------------------------
+        if use_dask:
+            if not HAS_DASK:
+                raise ImportError("dask_geopandas is required for out-of-core processing.")
+            if not is_parquet:
+                raise ValueError("Dask-GeoPandas currently best supports GeoParquet for distributed reads.")
+                
+            log_execution(logger, f"Lazy loading massive GeoParquet via Dask: {file_path}", logging.INFO)
+            import shapely.geometry
+            ddf = dask_gpd.read_parquet(file_path)
+            return ddf.clip(shapely.geometry.box(*safe_bbox))
+
+        # ---------------------------------------------------------
+        # AUTO-DETECTION ROUTER
+        # ---------------------------------------------------------
+        if engine == 'auto':
+            # DuckDB is generally vastly superior for remote Parquet files
+            if HAS_DUCKDB and is_parquet:
+                log_execution(logger, "Auto-routing to DuckDB (Optimized for Parquet).", logging.INFO)
+                engine = 'duckdb'
+            # For local GPKG/FGB, native GeoPandas/GDAL is usually fast enough
+            else:
+                log_execution(logger, "Auto-routing to native GeoPandas engine.", logging.INFO)
+                engine = 'geopandas'
+
+        # ---------------------------------------------------------
+        # DUCKDB ANALYTICAL ENGINE
+        # ---------------------------------------------------------
+        if engine == 'duckdb':
+            if not HAS_DUCKDB:
+                raise ImportError("duckdb is required to use the analytical query engine.")
+                
+            log_execution(logger, f"Executing DuckDB spatial pushdown on: {file_path}", logging.INFO)
+            
+            duckdb.execute("INSTALL spatial; LOAD spatial;")
+            if is_remote:
+                duckdb.execute("INSTALL httpfs; LOAD httpfs;") 
+            
+            from_clause = f"read_parquet('{file_path}')" if is_parquet else f"ST_Read('{file_path}')"
+            
+            # Pass the safely padded envelope to the ST_MakeEnvelope spatial filter
+            query = f"""
+                SELECT * 
+                FROM {from_clause}
+                WHERE ST_Intersects(
+                    geometry, 
+                    ST_MakeEnvelope({safe_minx}, {safe_miny}, {safe_maxx}, {safe_maxy})
+                )
+            """
+            # Execute the query and return the spatial dataframe
+            return gpd.GeoDataFrame(duckdb.query(query).df(), geometry='geometry')
+
+        # ---------------------------------------------------------
+        # NATIVE GEOPANDAS / GDAL ENGINE
+        # ---------------------------------------------------------
+        if engine == 'geopandas':
+            log_execution(logger, f"Fetching subset using native engine: {file_path}", logging.INFO)
+            
+            if is_parquet:
+                return gpd.read_parquet(file_path, bbox=safe_bbox)
+            else:
+                if is_remote:
+                    file_path = file_path.replace("s3://", "/vsis3/") if file_path.startswith("s3://") else f"/vsicurl/{file_path}"
+                return gpd.read_file(file_path, bbox=safe_bbox)
+    
+    @abstractmethod
+    def fetch_data(self, recipe: Dict[str, Any], logger: Optional[logging.Logger] = None) -> gpd.GeoDataFrame:
+        """
+        Translates the execution recipe into raw vector data retrieval.
+        Child classes must implement this to query their specific catalogs and return a GeoDataFrame.
+        """
+        pass
+
+    @abstractmethod
+    def resolve_target_grid(self, spatial_cfg: Dict[str, Any], logger: logging.Logger) -> str:
+        """
+        Translates user-defined spatial configurations into a validated master grid key.
+        """
+        pass
+
+    def process_cube(
+        self, 
+        recipe: Dict[str, Any], 
+        dataset_name: str, 
+        value_column: str,
+        group_cols: List[str],
+        output_filepath: str,
+        transform_func: Callable,
+        data_type: str = 'discrete', 
+        method: str = 'kdtree',
+        logger: Optional[logging.Logger] = None,
+        **kwargs
+    ) -> gpd.GeoDataFrame:
+        
+        # ---> Dynamically override vector processing parameters from recipe <---
+        source_cfg = recipe.get("sources", {}).get(dataset_name, {})
+        vector_cfg = source_cfg.get("vector_processing", {})
+        data_type = vector_cfg.get("data_type", data_type)
+        method = vector_cfg.get("method", method)
+
+        base_dir = recipe.get("base_dir", "./")
+        os.makedirs(base_dir, exist_ok=True)
+        
+        # Name the output file dynamically using the dataset_name
+        if not output_filepath:
+            cube_name = recipe.get("cube_name", "default_cube")
+            output_filepath = os.path.join(base_dir, f"{cube_name}_{dataset_name}.parquet")
+
+        log_execution(logger, f"\n=== Initiating {dataset_name.upper()} Vector Cube Generation ===", logging.INFO)
+        log_execution(logger, f"Processing Strategy: Method={method.upper()} | Type={data_type.upper()}", logging.INFO)
+
+        # 1. Fetch the Data
+        raw_gdf = self.fetch_data(recipe, logger=logger, **kwargs)
+        if raw_gdf.empty:
+            log_execution(logger, f"Terminating pipeline: fetched {dataset_name} dataset is empty.", logging.WARNING)
+            return raw_gdf
+
+        # 2. Sanitize Data
+        sanitized_gdf = self.sanitize_geometries(raw_gdf, logger=logger)
+
+        # 3. Resolve Master Grid
+        spatial_cfg = recipe.get('spatial', {})
+        target_grid_key = self.resolve_target_grid(spatial_cfg, logger)
+
+        # 3.5 Force Recipe Bounding Box Alignment
+        target_bbox = None
+        if spatial_cfg.get('use_bbox', False) and 'bbox' in spatial_cfg:
+            log_execution(logger, "Extracting padded global bounding box from recipe to ensure total data encapsulation...", logging.INFO)
+            bbox_cfg = spatial_cfg['bbox']
+            
+            grid_info = self.GRID_REGISTRY[target_grid_key]
+            target_crs = grid_info["crs"]
+            target_res = grid_info["resolution"]
+            
+            wgs84_bounds = (
+                bbox_cfg["long_min"], 
+                bbox_cfg["lat_min"], 
+                bbox_cfg["long_max"], 
+                bbox_cfg["lat_max"]
+            )
+            
+            # This generates the exact bounds natively in the Target CRS (e.g., EPSG:3035 metric)
+            strict_bbox = transform_bounds("EPSG:4326", target_crs, *wgs84_bounds)
+            
+            # Pad by exactly 1 pixel in the metric CRS to catch stair-stepped source grids
+            target_bbox = (
+                strict_bbox[0] - target_res,
+                strict_bbox[1] - target_res,
+                strict_bbox[2] + target_res,
+                strict_bbox[3] + target_res
+            )
+        
+        # 4. Transform / Reproject using the injected callable
+        transformed_gdf = transform_func(
+            source_gdf=sanitized_gdf,
+            target_grid_name=target_grid_key,
+            value_column=value_column,
+            data_type=data_type,
+            method=method,
+            target_bbox=target_bbox,
+            logger=logger
+        )
+
+        # 5. Validate / Fidelity Check
+        valid_group_cols = [col for col in group_cols if col in sanitized_gdf.columns]
+        if len(valid_group_cols) < len(group_cols):
+            missing = set(group_cols) - set(valid_group_cols)
+            log_execution(logger, f"Fidelity check warning: Missing grouping columns {missing}. Grouping by {valid_group_cols} instead.", logging.WARNING)
+
+        df_results, summary_stats = self.evaluate_transformation_fidelity(
+            orig_gdf=sanitized_gdf,
+            targ_gdf=transformed_gdf,
+            value_col=value_column,
+            group_cols=valid_group_cols, # <-- Pass the dynamically filtered list
+            logger=logger
+        )
+
+        # ==========================================
+        # 6. EXPORT VALIDATION RESULTS (ISOLATED)
+        # ==========================================
+        cube_name = recipe.get('cube_name', 'default_dataset')
+        
+        # Nest by dataset_name to prevent file overwrites
+        validation_dir = os.path.join(base_dir, 'validation', cube_name, dataset_name)
+        os.makedirs(validation_dir, exist_ok=True)
+        
+        results_csv_path = os.path.join(validation_dir, 'fidelity_strata_results.csv')
+        stats_json_path = os.path.join(validation_dir, 'fidelity_summary_stats.json')
+
+        df_results.to_csv(results_csv_path, index=False)
+        
+        safe_summary_stats = {
+            k: float(v) if pd.notna(v) else None 
+            for k, v in summary_stats.items()
+        }
+        
+        with open(stats_json_path, 'w') as f:
+            json.dump(safe_summary_stats, f, indent=4)
+            
+        log_execution(logger, f"Fidelity validation results exported to: {validation_dir}", logging.INFO)
+
+        # 7. Export to GeoParquet
+        log_execution(logger, f"Exporting aligned vector cube to {output_filepath}...", logging.INFO)
+        transformed_gdf.to_parquet(output_filepath)
+        
+        log_execution(logger, f"=== {dataset_name.upper()} Vector Cube Generation Complete ===", logging.INFO)
+        
+        return transformed_gdf
