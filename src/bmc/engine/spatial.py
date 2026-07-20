@@ -1014,101 +1014,536 @@ from typing import Optional
 
 
 class spatial_vector_engine(base_spatial_grid):
+    def coordinate_to_geometry(
+    self,
+    df: pd.DataFrame,
+    x_col: str,
+    y_col: str,
+    uncert_col: Optional[str] = None,
+    output_type: str = "polygon",
+    input_crs: str = "EPSG:4326",
+    on_missing_uncertainty: str = "fallback",
+    quad_segs: int = 8,
+    logger: Optional[logging.Logger] = None,
+) -> gpd.GeoDataFrame:
+        """
+        Converts tabular spatial records into a GeoDataFrame, optionally applying
+        a geometric buffer based on coordinate uncertainty.
+    
+        This function acts as a foundational geometric ingestion tool. It takes
+        raw coordinates (X/Y) and translates them into strictly defined spatial
+        objects. When configured to generate polygons from geographic coordinates
+        (degrees), it mitigates high-latitude scaling errors by mathematically
+        partitioning records into their respective localized projection zones —
+        Universal Transverse Mercator (UTM) between 80°S and 84°N, and Universal
+        Polar Stereographic (UPS) beyond those latitudes, where UTM itself
+        becomes badly distorted. Buffering is executed natively in undistorted
+        meters within each local zone before the final geometries are
+        reprojected back to the target coordinate framework.
+    
+        Parameters
+        ----------
+        df : pandas.DataFrame
+            The input dataframe containing tabular coordinate data and
+            associated uncertainty measurements.
+        x_col : str
+            The exact string name of the column containing the X coordinate
+            (e.g., Longitude or Easting).
+        y_col : str
+            The exact string name of the column containing the Y coordinate
+            (e.g., Latitude or Northing).
+        uncert_col : str, optional
+            The string name of the column containing coordinate uncertainty
+            measurements in meters. If this column is missing from the
+            DataFrame or passed as None, behavior is controlled by
+            `on_missing_uncertainty`. Default is None.
+        output_type : {'point', 'polygon'}, optional
+            The desired geometric output topology. Default is 'polygon'.
+        input_crs : str, optional
+            The EPSG code or standard string identifier for the source
+            coordinate system. Default is "EPSG:4326" (WGS84).
+        on_missing_uncertainty : {'fallback', 'raise'}, optional
+            Controls behavior when `output_type='polygon'` but `uncert_col` is
+            None or not found in `df.columns`.
+            - 'fallback': log a warning and degrade to 'point' geometry
+            generation (previous default behavior).
+            - 'raise': raise a ValueError instead of silently degrading. This
+            is recommended in pipelines where a mistyped column name should
+            be caught rather than silently producing points instead of
+            polygons.
+            Default is 'fallback'.
+        quad_segs : int, optional
+            Number of line segments used to approximate a quarter-circle when
+            buffering (passed to shapely's `buffer`). Higher values produce
+            smoother, more accurate circles at the cost of more vertices.
+            Matters most when output polygons will be used for areal
+            intersection against a raster grid. Default is 8 (shapely default).
+        logger : logging.Logger, optional
+            An instance of the standard Python logger to track execution
+            progress, coordinate fallbacks, and potential data mutation
+            warnings. Default is None.
+    
+        Returns
+        -------
+        geopandas.GeoDataFrame
+            A mathematically transformed and structurally complete GeoDataFrame
+            assigned to the supplied input_crs.
+    
+        Raises
+        ------
+        ValueError
+            If `output_type` is not exactly 'point' or 'polygon'; if
+            `on_missing_uncertainty='raise'` and no valid `uncert_col` is
+            supplied when `output_type='polygon'`; if `df` contains NaN values
+            in `x_col`/`y_col`; or if `df` is empty.
+    
+        Notes
+        -----
+        Missing uncertainty values (NaN) within a valid `uncert_col` are
+        dynamically filled with 0 prior to buffering. Negative uncertainty
+        values are clipped to 0 with a warning, since a negative buffer
+        distance on a point silently collapses to an empty geometry rather
+        than raising — which would otherwise cause silent row loss in
+        downstream areal-intersection use.
+        """
+    
+        # Validate the core output parameter to prevent downstream geometric failures
+        if output_type not in ("point", "polygon"):
+            raise ValueError("output_type must be either 'point' or 'polygon'")
+    
+        if on_missing_uncertainty not in ("fallback", "raise"):
+            raise ValueError("on_missing_uncertainty must be either 'fallback' or 'raise'")
+    
+        if df.empty:
+            raise ValueError("Input DataFrame is empty; cannot construct geometries.")
+    
+        # Coordinates are the one thing this function cannot safely default or
+        # guess around. A NaN here would silently produce an invalid Point
+        # geometry, so we fail loudly instead.
+        coord_nan_mask = df[x_col].isna() | df[y_col].isna()
+        if coord_nan_mask.any():
+            raise ValueError(
+                f"Found {int(coord_nan_mask.sum())} row(s) with NaN in '{x_col}' or "
+                f"'{y_col}'. Resolve or filter these rows before calling "
+                "coordinate_to_geometry."
+            )
+    
+        # =========================================================================
+        # PIPELINE SAFETY: HANDLE MISSING UNCERTAINTY COLUMNS
+        # =========================================================================
+        # If the user requests polygons but fails to provide a valid uncertainty
+        # column, the geometry engine cannot mathematically construct a radius.
+        # Depending on `on_missing_uncertainty`, we either degrade to Points
+        # (previous default) or raise, so a mistyped column name doesn't silently
+        # change the output topology in a pipeline.
+        if output_type == "polygon":
+            if not uncert_col or uncert_col not in df.columns:
+                if on_missing_uncertainty == "raise":
+                    raise ValueError(
+                        f"uncert_col '{uncert_col}' not found in input data and "
+                        "output_type='polygon' was requested. Pass a valid "
+                        "uncert_col, or set on_missing_uncertainty='fallback' to "
+                        "silently degrade to point geometry."
+                    )
+                log_execution(
+                    logger,
+                    f"Uncertainty column '{uncert_col}' not found in input data. "
+                    "Defaulting to 'point' geometry generation.",
+                    level=logging.WARNING,
+                )
+                output_type = "point"
+    
+        log_execution(
+            logger,
+            f"Converting tabular coordinates to {output_type.upper()} geometries in {input_crs}...",
+            level=logging.INFO,
+        )
+    
+        # =========================================================================
+        # INITIALIZE BASE SPATIAL TOPOLOGY
+        # =========================================================================
+        # Convert the raw floating-point columns into actual Shapely Point objects.
+        # We copy the source dataframe explicitly to shield the underlying raw
+        # dataset from in-place property modifications during spatial clustering.
+        gdf = gpd.GeoDataFrame(
+            df.copy(),
+            geometry=gpd.points_from_xy(df[x_col], df[y_col]),
+            crs=input_crs,
+        )
+    
+        # =========================================================================
+        # POINT STRATEGY RESOLUTION
+        # =========================================================================
+        # If the requested (or fallback) topology is just points, our work is done.
+        # The original uncertainty column (if it exists) is preserved as a standard
+        # DataFrame attribute rather than being structurally baked into the geometry.
+        if output_type == "point":
+            log_execution(logger, "Point generation complete.", level=logging.INFO)
+            return gdf
+    
+        # =========================================================================
+        # POLYGON STRATEGY - SANITIZE MISSING / INVALID DATA
+        # =========================================================================
+        # The spatial buffer method will mathematically fail if fed a NaN value,
+        # and will silently return an EMPTY geometry (not an error) if fed a
+        # negative value. Both are sanitized explicitly here so bad uncertainty
+        # data produces a loud log message rather than a silently missing row
+        # downstream.
+        missing_count = gdf[uncert_col].isna().sum()
+        if missing_count > 0:
+            log_execution(
+                logger,
+                f"Filling {missing_count} missing uncertainty values with 0m to prevent buffering failure.",
+                level=logging.WARNING,
+            )
+            gdf[uncert_col] = gdf[uncert_col].fillna(0)
+    
+        negative_mask = gdf[uncert_col] < 0
+        negative_count = negative_mask.sum()
+        if negative_count > 0:
+            log_execution(
+                logger,
+                f"Clipping {negative_count} negative uncertainty value(s) to 0m; "
+                "a negative buffer distance silently collapses points to empty "
+                "geometry rather than raising.",
+                level=logging.WARNING,
+            )
+            gdf[uncert_col] = gdf[uncert_col].clip(lower=0)
+    
+        # =========================================================================
+        # STEP 4: GEOMETRIC EXPANSION (BUFFERING) WITH CRS AWARENESS
+        # =========================================================================
+        log_execution(logger, "Applying metric coordinate uncertainty buffers...", level=logging.INFO)
+    
+        # Check if the user-supplied CRS is geographic (degrees) or projected (meters).
+        if gdf.crs.is_geographic:
+            log_execution(
+                logger,
+                "Geographic CRS detected. Dynamically mapping records to localized "
+                "UTM/UPS zones to optimize linear scale accuracy...",
+                level=logging.INFO,
+            )
+    
+            # To compute true geographic longitudinal strips, we temporarily mirror
+            # coordinates into WGS84. Comparing on the resolved EPSG code (rather
+            # than the raw input string) means this correctly no-ops for any
+            # equivalent spelling of EPSG:4326 (e.g. 4326, "epsg:4326", a
+            # pyproj.CRS object), not just the exact string "EPSG:4326".
+            if gdf.crs.to_epsg() == 4326:
+                gdf_wgs84 = gdf
+            else:
+                gdf_wgs84 = gdf.to_crs("EPSG:4326")
+    
+            longitudes = gdf_wgs84.geometry.x
+            latitudes = gdf_wgs84.geometry.y
+    
+            # ---------------------------------------------------------------
+            # Zone assignment: UTM for |lat| within standard bounds, UPS for
+            # the polar caps where UTM's convergence/scale distortion becomes
+            # unacceptable. This mirrors the standard MGRS convention:
+            #   - North polar cap:  lat >= 84°N   -> EPSG:32661 (UPS North)
+            #   - South polar cap:  lat <  80°S   -> EPSG:32761 (UPS South)
+            #   - Everything else:  standard UTM zone/hemisphere
+            # ---------------------------------------------------------------
+            UPS_NORTH_EPSG = 32661
+            UPS_SOUTH_EPSG = 32761
+    
+            north_polar_mask = latitudes >= 84.0
+            south_polar_mask = latitudes < -80.0
+            utm_mask = ~(north_polar_mask | south_polar_mask)
+    
+            zone_epsg = pd.Series(index=gdf.index, dtype="int64")
+            zone_epsg.loc[north_polar_mask] = UPS_NORTH_EPSG
+            zone_epsg.loc[south_polar_mask] = UPS_SOUTH_EPSG
+    
+            if utm_mask.any():
+                # UTM zones are 6-degree longitudinal strips numbered 1-60.
+                # Longitude of exactly +180 must clamp to zone 60, not roll
+                # over into a nonexistent zone 61.
+                utm_zones = np.clip(
+                    ((longitudes[utm_mask] + 180) / 6).astype(int) + 1, 1, 60
+                )
+                # 32600 handles the Northern Hemisphere, 32700 the Southern.
+                epsg_prefixes = np.where(latitudes[utm_mask] >= 0, 32600, 32700)
+                zone_epsg.loc[utm_mask] = epsg_prefixes + utm_zones
+    
+            # Namespaced temp column name to avoid silently colliding with a
+            # pre-existing column of the same name in the caller's data.
+            zone_col = "_coord_to_geom_zone_epsg"
+            gdf[zone_col] = zone_epsg.astype(int)
+    
+            # Execute buffering grouped by localized metric zone (UTM or UPS).
+            log_execution(logger, "Batch-processing polygons within localized metric zones...", level=logging.INFO)
+            buffered_chunks = []
+    
+            for zone_epsg_code, group in gdf.groupby(zone_col):
+                # Cast the localized group into its respective conformal metric projection
+                group_metric = group.to_crs(f"EPSG:{zone_epsg_code}")
+    
+                # Draw spatial boundaries using real-world meters with minimal scale distortion
+                group_metric["geometry"] = group_metric.geometry.buffer(
+                group_metric[uncert_col], resolution=quad_segs
+            )
+    
+                # Snap the newly formed polygons straight back to the user's target system
+                buffered_chunks.append(group_metric.to_crs(input_crs))
+    
+            # Re-aggregate structural subsets, clear grid-zone columns, and restore indices.
+            # Wrapping explicitly in gpd.GeoDataFrame guards against pd.concat
+            # silently downgrading to a plain DataFrame / dropping CRS metadata
+            # on some geopandas/pandas version combinations.
+            gdf_polygon = gpd.GeoDataFrame(
+                pd.concat(buffered_chunks).sort_index(), crs=input_crs
+            )
+            gdf_polygon = gdf_polygon.drop(columns=[zone_col])
+        else:
+            # If the input CRS is already a metric projection (e.g., EPSG:3035),
+            # we completely bypass regional batching and draw buffers natively.
+            log_execution(logger, "Projected CRS detected. Buffering directly in native units.", level=logging.INFO)
+            gdf_polygon = gdf.copy()
+            gdf_polygon["geometry"] = gdf_polygon.geometry.buffer(
+            gdf_polygon[uncert_col], resolution=quad_segs
+        )
+    
+        log_execution(logger, "Coordinate uncertainty polygon generation complete.", level=logging.INFO)
+    
+        return gdf_polygon
 
     def sanitize_geometries(
-        self, 
-        gdf: gpd.GeoDataFrame, 
-        allowed_types: Optional[list] = None,
-        logger: Optional[logging.Logger] = None) -> gpd.GeoDataFrame:
+    self, 
+    gdf: gpd.GeoDataFrame, 
+    allowed_types: Optional[List[str]] = None,
+    force_multi: bool = True,
+    deduplicate: bool = False,
+    make_valid_method: str = "linework",
+    logger: Optional[logging.Logger] = None
+) -> gpd.GeoDataFrame:
         """
-        Cleans, flattens, and validates dirty vector geometries.
+        Cleans, flattens, normalizes, and validates dirty vector geometries using 
+        highly optimized vectorized Shapely C-operations where possible.
+
+        Operational Mechanics:
+        1. Removes completely null, missing, or structurally empty geometries.
+        2. Drops the Z/M coordinates to enforce a strict 2D planar workspace.
+        3. Isolates topologically invalid shapes (e.g., self-intersections) and heals them.
+        4. Unpacks messy GeometryCollections, extracting only the highest-dimensional assets.
+        5. Runs a safety re-validation check to drop unresolvable geometric anomalies.
+        6. Homogenizes features into their Multi* variants to prevent downstream schema mismatches.
+        7. Optionally drops exact geometric duplicates and filters by case-sensitive geometry types.
+        8. Resets the index to guarantee safe table merges and joins downstream.
 
         Parameters
         ----------
         gdf : geopandas.GeoDataFrame
-            The raw input vector dataset.
+            The raw input vector dataset containing potentially corrupt or mixed geometries.
         allowed_types : list of str, optional
-            If provided, strictly filters out any geometry types not in this list 
-            (e.g., ['Polygon', 'MultiPolygon']). Default is None (allows all valid types).
+            Case-sensitive geometry types allowed in the final output layer 
+            (e.g., ['Polygon', 'MultiPolygon']). **If left empty or None, all valid 
+            geometry types are permitted to pass through.**
+        force_multi : bool, default True
+            If True, normalizes single/atomic geometries to their Multi* counterparts 
+            (e.g., Polygon -> MultiPolygon) to ensure index/schema uniformity.
+        deduplicate : bool, default False
+            If True, executes an exact spatial lookup to drop duplicate geometry rows.
+        make_valid_method : str, default 'linework'
+            The underlying GEOS algorithm used for fixing broken topologies. 
+            Options are 'linework' (standard) or 'structure' (preserves grid lines better).
         logger : logging.Logger, optional
-            Logger instance for execution tracking.
+            Active pipeline logger instance for streaming system telemetry.
 
         Returns
         -------
         geopandas.GeoDataFrame
-            A pristine, strictly 2D, topologically valid GeoDataFrame.
+            A pristine, topologically valid, schema-homogenized dataset with a clean contiguous index.
         """
         log_execution(logger, "Initiating vector geometry sanitization...", level=logging.INFO)
         
-        # Purge Nulls and Empty Geometries (The Ghosts)
+        # -------------------------------------------------------------------------
+        # STRUCTURAL INPUT GUARDRAILS & TYPO PROTECTION
+        # -------------------------------------------------------------------------
+        if gdf.empty:
+            log_execution(logger, "[WARNING] Input GeoDataFrame is empty. Returning empty copy.", level=logging.WARNING)
+            return gdf.copy()
+
+        # Define the strict internal vocabulary recognized by Shapely's .geom_type property
+        VALID_GEOM_TYPES = {
+            "Point", "MultiPoint", "LineString", "MultiLineString", 
+            "Polygon", "MultiPolygon", "GeometryCollection"
+        }
+        
+        # If a filter list is provided, validate it upfront to prevent silent runtime failure
+        if allowed_types:
+            for t in allowed_types:
+                if t not in VALID_GEOM_TYPES:
+                    raise ValueError(
+                        f"Invalid type '{t}' in allowed_types. Must match standard Shapely case-sensitive "
+                        f"vocabulary: {list(VALID_GEOM_TYPES)}"
+                    )
+
         initial_count = len(gdf)
         
-        # 1. Drop true Nulls/Nones using pandas native dropna (avoids the GeoPandas warning)
+        # -------------------------------------------------------------------------
+        # PURGE NULLS AND STRUCTURALLY EMPTY GEOMETRIES (THE GHOSTS)
+        # -------------------------------------------------------------------------
+        # dropna avoids triggering the messy GeoPandas warning when dropping missing geometries
         gdf = gdf.dropna(subset=['geometry'])
-        
-        # 2. Drop structurally empty geometries (e.g., Polygon())
+        # Strip empty representations like "Polygon()" which contain no vertices
         gdf = gdf[~gdf.geometry.is_empty].copy()
         
         dropped_empty = initial_count - len(gdf)
         if dropped_empty > 0:
             log_execution(logger, f"Dropped {dropped_empty} empty or null geometries.", level=logging.INFO)
 
-        # Force 2D Planar Geometries (Drop Z/M dimensions)
-        gdf.geometry = gdf.geometry.apply(force_2d)
+        # -------------------------------------------------------------------------
+        # VECTORIZED FORCE 2D PLANAR GEOMETRIES (DROP Z/M AXES)
+        # -------------------------------------------------------------------------
+        # Fast C-Array Operation: Flattens 3D/4D dimensions down to native X and Y coordinates
+        gdf.geometry = shapely.force_2d(gdf.geometry.values)
 
-        # Heal Invalid Topologies (The Bowties)
-        invalid_mask = ~gdf.geometry.is_valid
+        # -------------------------------------------------------------------------
+        # VECTORIZED TOPOLOGY HEALING (THE BOWTIES)
+        # -------------------------------------------------------------------------
+        # Isolate only the invalid rows to save processing cycles over large datasets
+        invalid_mask = ~gdf.geometry.is_valid.values
         invalid_count = invalid_mask.sum()
-        if invalid_count > 0:
-            log_execution(logger, f"Healing {invalid_count} topologically invalid geometries...", level=logging.INFO)
-            gdf.loc[invalid_mask, 'geometry'] = gdf.loc[invalid_mask, 'geometry'].apply(make_valid)
-
-        # Handle GeometryCollections generated by `make_valid`
-        def extract_dominant_geometry(geom):
-            """
-            Unpacks a GeometryCollection and extracts the geometries of the 
-            highest topological dimension (Polygons > Lines > Points), 
-            bundling them safely into a MultiGeometry to prevent data loss.
-            """
-            if not isinstance(geom, GeometryCollection):
-                return geom
-
-            parts = list(geom.geoms)
-            if not parts:
-                return None
-
-            polygons = [p for p in parts if p.geom_type in ['Polygon', 'MultiPolygon']]
-            lines = [p for p in parts if p.geom_type in ['LineString', 'MultiLineString']]
-            points = [p for p in parts if p.geom_type in ['Point', 'MultiPoint']]
-
-            if polygons:
-                return MultiPolygon(polygons) if len(polygons) > 1 else polygons[0]
-            elif lines:
-                return MultiLineString(lines) if len(lines) > 1 else lines[0]
-            elif points:
-                return MultiPoint(points) if len(points) > 1 else points[0]
-                
-            return None
-
-        gdf.geometry = gdf.geometry.apply(extract_dominant_geometry)
         
-        # Run the empty check one more time just in case extraction resulted in empties
-        gdf = gdf[gdf.geometry.notnull() & ~gdf.geometry.is_empty].copy()
+        if invalid_count > 0:
+            log_execution(logger, f"Healing {invalid_count} topologically invalid geometries via '{make_valid_method}'...", level=logging.INFO)
+            # Vectorized array healing; generates structural representations or collections if needed
+            healed_geoms = shapely.make_valid(gdf.loc[invalid_mask, 'geometry'].values, method=make_valid_method)
+            gdf.loc[invalid_mask, 'geometry'] = healed_geoms
 
-        # 5. Type Enforcement (Optional)
-        if allowed_types:
-            type_mask = gdf.geometry.geom_type.isin(allowed_types)
+        # -------------------------------------------------------------------------
+        # UNPACK GEOMETRYCOLLECTIONS (SCOPED STRICTLY TO HEALED ROW SUBSET)
+        # -------------------------------------------------------------------------
+        healed_subset = gdf.loc[invalid_mask]
+        collection_mask = (healed_subset.geometry.geom_type == "GeometryCollection").values
+        
+        if collection_mask.any():
+            collection_indices = healed_subset.index[collection_mask]
+            log_execution(logger, f"Unpacking {len(collection_indices)} complex GeometryCollections...", level=logging.INFO)
+            
+            audited_dropped_parts = 0
+            audited_dropped_features = 0
+            updated_geometries = []
+
+            # Iterate only through the row indices flagged as structural collections
+            for idx in collection_indices:
+                geom = gdf.loc[idx, 'geometry']
+                parts = list(geom.geoms)
+                
+                # Sort individual parts based on their structural complexity/topological dimensions
+                polygons = [p for p in parts if p.geom_type in ['Polygon', 'MultiPolygon']]
+                lines = [p for p in parts if p.geom_type in ['LineString', 'MultiLineString']]
+                points = [p for p in parts if p.geom_type in ['Point', 'MultiPoint']]
+                
+                selected_geom = None
+                dropped_count = 0
+                
+                # Prioritize Polygons > Lines > Points to pick the dominant dimension
+                if polygons:
+                    # shapely.get_parts recursively flattens internal MultiPolygons to avoid an atomic list crash
+                    flattened_polys = shapely.get_parts(polygons)
+                    selected_geom = shapely.MultiPolygon(flattened_polys)
+                    dropped_count = len(lines) + len(points)
+                elif lines:
+                    flattened_lines = shapely.get_parts(lines)
+                    selected_geom = shapely.MultiLineString(flattened_lines)
+                    dropped_count = len(points)
+                elif points:
+                    flattened_points = shapely.get_parts(points)
+                    selected_geom = shapely.MultiPoint(flattened_points)
+
+                # Keep track of dropped dimension fragments for audit logs
+                if dropped_count > 0:
+                    audited_dropped_parts += dropped_count
+                    audited_dropped_features += 1
+                    
+                updated_geometries.append(selected_geom)
+                
+            # Log a warning to make sure any loss of small slivers/lines is completely auditable
+            if audited_dropped_parts > 0:
+                log_execution(
+                    logger, 
+                    f"[AUDIT] Discarded {audited_dropped_parts} lower-dimension sliver parts across "
+                    f"{audited_dropped_features} split features to preserve topological dimensionality.", 
+                    level=logging.WARNING
+                )
+                
+            gdf.loc[collection_indices, 'geometry'] = updated_geometries
+
+        # -------------------------------------------------------------------------
+        # PIPELINE SAFETY RE-VALIDATION CHECK
+        # -------------------------------------------------------------------------
+        # Double-check that the GEOS algorithms didn't generate any unresolvable geometric artifacts
+        post_healing_invalid = ~gdf.geometry.is_valid.values
+        if post_healing_invalid.any():
+            failed_count = post_healing_invalid.sum()
+            log_execution(
+                logger, 
+                f"[CRITICAL] {failed_count} features failed post-healing validation check. Purging unresolvable structures.", 
+                level=logging.ERROR
+            )
+            gdf = gdf[~post_healing_invalid].copy()
+
+        # -------------------------------------------------------------------------
+        #: SCHEMA NORMALIZATION (ENFORCE TYPE HOMOGENEITY)
+        # -------------------------------------------------------------------------
+        # Converts singular primitives (e.g. Polygon) into single-element Multi-primitives.
+        # Prevents runtime crashes when exporting to rigid vector formats (like shapefiles/Parquet schemas).
+        if force_multi and not gdf.empty:
+            gdf.geometry = gdf.geometry.apply(
+                lambda g: shapely.multipoints([g]) if g.geom_type == 'Point' else (
+                        shapely.multilinestrings([g]) if g.geom_type == 'LineString' else (
+                        shapely.multipolygons([g]) if g.geom_type == 'Polygon' else g))
+            )
+
+        # -------------------------------------------------------------------------
+        # GEOMETRY DEDUPLICATION (OPTIONAL)
+        # -------------------------------------------------------------------------
+        if deduplicate and not gdf.empty:
+            pre_dedup = len(gdf)
+            gdf = gdf.drop_duplicates(subset=['geometry']).copy()
+            dedup_delta = pre_dedup - len(gdf)
+            if dedup_delta > 0:
+                log_execution(logger, f"Deduplication removed {dedup_delta} exact geometry overlaps.", level=logging.INFO)
+
+        # -------------------------------------------------------------------------
+        # TYPE ENFORCEMENT
+        # -------------------------------------------------------------------------
+        # Note: If allowed_types was left as None/Empty, this whole block is skipped
+        # and all valid geometry types are safely permitted to remain in the dataset.
+        if allowed_types and not gdf.empty:
+            type_mask = gdf.geometry.geom_type.isin(allowed_types).values
             dropped_type = len(gdf) - type_mask.sum()
             gdf = gdf[type_mask].copy()
             if dropped_type > 0:
                 log_execution(
                     logger, 
-                    f"Filtered out {dropped_type} geometries not matching allowed types: {allowed_types}", 
+                    f"Filtered out {dropped_type} features not matching allowed types: {allowed_types}", 
                     level=logging.INFO
                 )
 
-        log_execution(logger, f"Sanitization complete. Final feature count: {len(gdf)}", level=logging.INFO)
-        
+        # -------------------------------------------------------------------------
+        # RESET INDEX FOR SEAMLESS MERGES
+        # -------------------------------------------------------------------------
+        # Clears fragmented, non-contiguous indexing caused by row-dropping operations
+        gdf = gdf.reset_index(drop=True)
+
+        # -------------------------------------------------------------------------
+        # PIPELINE TERMINATION ASSESSMENT
+        # -------------------------------------------------------------------------
+        final_count = len(gdf)
+        if final_count == 0:
+            # Elevated warning level flags that the sanitization stripped everything
+            log_execution(
+                logger, 
+                f"[WARNING] Geometry sanitization reduced feature count from {initial_count} to 0 rows. Pipeline halted.", 
+                level=logging.WARNING
+            )
+        else:
+            log_execution(logger, f"Sanitization complete. Final feature count: {final_count}", level=logging.INFO)
+            
         return gdf
 
     def transform_cellCollection_to_template(
