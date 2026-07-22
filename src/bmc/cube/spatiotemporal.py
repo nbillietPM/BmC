@@ -590,6 +590,25 @@ class spatiotemporal_vector_cube(spatial_vector_engine, ABC):
         """
         pass
 
+    def _apply_cf_temporal_standards(
+    self, 
+    df: Union[pd.DataFrame, gpd.GeoDataFrame]
+) -> Union[pd.DataFrame, gpd.GeoDataFrame]:
+        """
+        Internal: Converts split temporal columns into CF-compliant ISO-8601 datetimes.
+        Safely processes and returns either DataFrames or GeoDataFrames.
+        """
+        work_df = df.copy()
+        
+        if 'year' in work_df.columns and 'month' in work_df.columns:
+            work_df['datetime'] = pd.to_datetime(
+                work_df['year'].astype(str) + '-' + work_df['month'].astype(str).str.zfill(2) + '-01', 
+                format='%Y-%m-%d'
+            )
+            work_df = work_df.drop(columns=['year', 'month'])
+            
+        return work_df
+
     def process_cube(
         self, 
         recipe: Dict[str, Any], 

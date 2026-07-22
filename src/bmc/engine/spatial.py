@@ -4,6 +4,7 @@ import glob
 import gc
 from pathlib import Path
 import tempfile
+import warnings
 
 import logging
 from typing import Optional, Union, Dict, Any, List, Tuple
@@ -33,6 +34,7 @@ import rasterio
 from rasterio.warp import transform_bounds
 from rasterio.transform import from_origin
 from rasterio.enums import Resampling
+import shapely
 from shapely.geometry import box
 from scipy.spatial import KDTree
 
@@ -394,8 +396,8 @@ class base_spatial_grid():
         aligned_maxy = master_miny + math.ceil((s_maxy - master_miny) / res) * res
         
         # 2. Calculate integer dimensions safely
-        width = int(round((aligned_maxx - aligned_minx) / res))
-        height = int(round((aligned_maxy - aligned_miny) / res))
+        width = max(1, int(round((aligned_maxx - aligned_minx) / res)))
+        height = max(1, int(round((aligned_maxy - aligned_miny) / res)))
         
         # 3. Generate spatial coordinates (Pixel Centers)
         x_coords = aligned_minx + (np.arange(width) + 0.5) * res
@@ -424,6 +426,57 @@ class base_spatial_grid():
         template.attrs["crs"] = str(master["crs"])
         
         return template, (aligned_minx, aligned_miny, aligned_maxx, aligned_maxy)
+
+    def calculate_deterministic_global_indices(
+        self,
+        x_coords: np.ndarray,
+        y_coords: np.ndarray,
+        grid_name: str,
+        logger: Optional[logging.Logger] = None
+    ) -> np.ndarray:
+        """
+        Converts local 2D spatial coordinates into a deterministic, globally 
+        consistent 1D index based on a master grid's absolute origin.
+
+        This guarantees that the same physical spatial cell will always yield 
+        the exact same integer ID, regardless of the localized bounding box 
+        or processing chunk being evaluated.
+
+        Parameters
+        ----------
+        x_coords : numpy.ndarray
+            A 1D array or flattened mesh of pixel X centers (easting/longitude).
+        y_coords : numpy.ndarray
+            A 1D array or flattened mesh of pixel Y centers (northing/latitude).
+        grid_name : str
+            The key of the master grid defined in `GRID_REGISTRY` to fetch 
+            the absolute bounds and resolution.
+        logger : logging.Logger, optional
+            Logger instance for execution tracking.
+
+        Returns
+        -------
+        numpy.ndarray
+            An array of int64 global indices.
+        """
+        if grid_name not in self.GRID_REGISTRY:
+            raise KeyError(f"Target grid '{grid_name}' not found in GRID_REGISTRY.")
+            
+        master_spec = self.GRID_REGISTRY[grid_name]
+        res = master_spec["resolution"]
+        master_minx, _, master_maxx, master_maxy = master_spec["bounds"]
+        
+        # Calculate total absolute columns in the entire master grid
+        total_global_cols = int(round((master_maxx - master_minx) / res))
+        
+        # Calculate absolute row/col offsets from the top-left master origin
+        global_cols = np.floor((x_coords - master_minx) / res).astype(np.int64)
+        global_rows = np.floor((master_maxy - y_coords) / res).astype(np.int64)
+        
+        # Flatten into a rigid, globally consistent 1D index
+        global_grid_ids = (global_rows * total_global_cols) + global_cols
+        
+        return global_grid_ids
 
 class spatial_engine(base_spatial_grid):
     """
@@ -1015,31 +1068,22 @@ from typing import Optional
 
 class spatial_vector_engine(base_spatial_grid):
     def coordinate_to_geometry(
-    self,
-    df: pd.DataFrame,
-    x_col: str,
-    y_col: str,
-    uncert_col: Optional[str] = None,
-    output_type: str = "polygon",
-    input_crs: str = "EPSG:4326",
-    on_missing_uncertainty: str = "fallback",
-    quad_segs: int = 8,
-    logger: Optional[logging.Logger] = None,
-) -> gpd.GeoDataFrame:
+        self,
+        df: pd.DataFrame,
+        x_col: str,
+        y_col: str,
+        uncert_col: Optional[str] = None,
+        output_type: str = "polygon",
+        input_crs: str = "EPSG:4326",
+        on_missing_uncertainty: str = "fallback",
+        quad_segs: int = 8,
+        point_cloud_config: Optional[Dict[str, Any]] = None,
+        logger: Optional[logging.Logger] = None,
+    ) -> gpd.GeoDataFrame:
         """
         Converts tabular spatial records into a GeoDataFrame, optionally applying
-        a geometric buffer based on coordinate uncertainty.
-    
-        This function acts as a foundational geometric ingestion tool. It takes
-        raw coordinates (X/Y) and translates them into strictly defined spatial
-        objects. When configured to generate polygons from geographic coordinates
-        (degrees), it mitigates high-latitude scaling errors by mathematically
-        partitioning records into their respective localized projection zones —
-        Universal Transverse Mercator (UTM) between 80°S and 84°N, and Universal
-        Polar Stereographic (UPS) beyond those latitudes, where UTM itself
-        becomes badly distorted. Buffering is executed natively in undistorted
-        meters within each local zone before the final geometries are
-        reprojected back to the target coordinate framework.
+        a geometric buffer or generating Monte Carlo point clouds based on coordinate 
+        uncertainty.
     
         Parameters
         ----------
@@ -1047,69 +1091,47 @@ class spatial_vector_engine(base_spatial_grid):
             The input dataframe containing tabular coordinate data and
             associated uncertainty measurements.
         x_col : str
-            The exact string name of the column containing the X coordinate
-            (e.g., Longitude or Easting).
+            The exact column name containing X coordinates (Longitude/Easting).
         y_col : str
-            The exact string name of the column containing the Y coordinate
-            (e.g., Latitude or Northing).
+            The exact column name containing Y coordinates (Latitude/Northing).
         uncert_col : str, optional
-            The string name of the column containing coordinate uncertainty
-            measurements in meters. If this column is missing from the
-            DataFrame or passed as None, behavior is controlled by
-            `on_missing_uncertainty`. Default is None.
-        output_type : {'point', 'polygon'}, optional
+            The column name containing coordinate uncertainty in meters.
+        output_type : {'point', 'polygon', 'point_cloud'}, optional
             The desired geometric output topology. Default is 'polygon'.
+            * 'point': Constructs single Point geometries.
+            * 'polygon': Creates uncertainty buffers dynamically in local UTM/UPS zones.
+            * 'point_cloud': Delegates to generate_spatial_point_clouds to produce MultiPoint 
+              jitter clouds while preserving original centroids.
         input_crs : str, optional
-            The EPSG code or standard string identifier for the source
-            coordinate system. Default is "EPSG:4326" (WGS84).
+            The EPSG code or identifier for source coordinates. Default is "EPSG:4326".
         on_missing_uncertainty : {'fallback', 'raise'}, optional
-            Controls behavior when `output_type='polygon'` but `uncert_col` is
-            None or not found in `df.columns`.
-            - 'fallback': log a warning and degrade to 'point' geometry
-            generation (previous default behavior).
-            - 'raise': raise a ValueError instead of silently degrading. This
-            is recommended in pipelines where a mistyped column name should
-            be caught rather than silently producing points instead of
-            polygons.
-            Default is 'fallback'.
+            Controls behavior when `output_type` is 'polygon' or 'point_cloud' but 
+            `uncert_col` is missing.
+            - 'fallback': log a warning and degrade to 'point' geometry generation.
+            - 'raise': raise a ValueError immediately.
         quad_segs : int, optional
-            Number of line segments used to approximate a quarter-circle when
-            buffering (passed to shapely's `buffer`). Higher values produce
-            smoother, more accurate circles at the cost of more vertices.
-            Matters most when output polygons will be used for areal
-            intersection against a raster grid. Default is 8 (shapely default).
+            Quarter-circle segment resolution for polygon buffering. Default is 8.
+        point_cloud_config : dict, optional
+            Configuration dictionary for point cloud generation when output_type='point_cloud'.
+            Supports both direct parameter keys and STAC processing extension keys:
+            - n_passes / processing:n_passes (default: 30)
+            - distribution / processing:distribution (default: 'gaussian')
+            - random_state / random_seed / processing:random_seed (default: None)
+            - output_col (default: 'point_cloud')
         logger : logging.Logger, optional
-            An instance of the standard Python logger to track execution
-            progress, coordinate fallbacks, and potential data mutation
-            warnings. Default is None.
+            Instance of standard Python logger. Default is None.
     
         Returns
         -------
         geopandas.GeoDataFrame
-            A mathematically transformed and structurally complete GeoDataFrame
-            assigned to the supplied input_crs.
-    
-        Raises
-        ------
-        ValueError
-            If `output_type` is not exactly 'point' or 'polygon'; if
-            `on_missing_uncertainty='raise'` and no valid `uncert_col` is
-            supplied when `output_type='polygon'`; if `df` contains NaN values
-            in `x_col`/`y_col`; or if `df` is empty.
-    
-        Notes
-        -----
-        Missing uncertainty values (NaN) within a valid `uncert_col` are
-        dynamically filled with 0 prior to buffering. Negative uncertainty
-        values are clipped to 0 with a warning, since a negative buffer
-        distance on a point silently collapses to an empty geometry rather
-        than raising — which would otherwise cause silent row loss in
-        downstream areal-intersection use.
+            A transformed GeoDataFrame assigned to the input_crs.
         """
-    
-        # Validate the core output parameter to prevent downstream geometric failures
-        if output_type not in ("point", "polygon"):
-            raise ValueError("output_type must be either 'point' or 'polygon'")
+        # =========================================================================
+        # PARAMETER VALIDATION
+        # =========================================================================
+        valid_outputs = ("point", "polygon", "point_cloud")
+        if output_type not in valid_outputs:
+            raise ValueError(f"output_type must be one of {valid_outputs}, got '{output_type}'")
     
         if on_missing_uncertainty not in ("fallback", "raise"):
             raise ValueError("on_missing_uncertainty must be either 'fallback' or 'raise'")
@@ -1117,33 +1139,24 @@ class spatial_vector_engine(base_spatial_grid):
         if df.empty:
             raise ValueError("Input DataFrame is empty; cannot construct geometries.")
     
-        # Coordinates are the one thing this function cannot safely default or
-        # guess around. A NaN here would silently produce an invalid Point
-        # geometry, so we fail loudly instead.
         coord_nan_mask = df[x_col].isna() | df[y_col].isna()
         if coord_nan_mask.any():
             raise ValueError(
                 f"Found {int(coord_nan_mask.sum())} row(s) with NaN in '{x_col}' or "
-                f"'{y_col}'. Resolve or filter these rows before calling "
-                "coordinate_to_geometry."
+                f"'{y_col}'. Resolve or filter these rows before calling coordinate_to_geometry."
             )
     
         # =========================================================================
-        # PIPELINE SAFETY: HANDLE MISSING UNCERTAINTY COLUMNS
+        # PIPELINE SAFETY: UNCERTAINTY COLUMN CHECK FOR POLYGON / POINT_CLOUD
         # =========================================================================
-        # If the user requests polygons but fails to provide a valid uncertainty
-        # column, the geometry engine cannot mathematically construct a radius.
-        # Depending on `on_missing_uncertainty`, we either degrade to Points
-        # (previous default) or raise, so a mistyped column name doesn't silently
-        # change the output topology in a pipeline.
-        if output_type == "polygon":
+        if output_type in ("polygon", "point_cloud"):
             if not uncert_col or uncert_col not in df.columns:
                 if on_missing_uncertainty == "raise":
                     raise ValueError(
                         f"uncert_col '{uncert_col}' not found in input data and "
-                        "output_type='polygon' was requested. Pass a valid "
+                        f"output_type='{output_type}' was requested. Pass a valid "
                         "uncert_col, or set on_missing_uncertainty='fallback' to "
-                        "silently degrade to point geometry."
+                        "degrade to point geometry."
                     )
                 log_execution(
                     logger,
@@ -1162,33 +1175,49 @@ class spatial_vector_engine(base_spatial_grid):
         # =========================================================================
         # INITIALIZE BASE SPATIAL TOPOLOGY
         # =========================================================================
-        # Convert the raw floating-point columns into actual Shapely Point objects.
-        # We copy the source dataframe explicitly to shield the underlying raw
-        # dataset from in-place property modifications during spatial clustering.
         gdf = gpd.GeoDataFrame(
             df.copy(),
             geometry=gpd.points_from_xy(df[x_col], df[y_col]),
             crs=input_crs,
         )
+        
+        # Drop redundant raw coordinate columns
+        gdf = gdf.drop(columns=[x_col, y_col])
     
         # =========================================================================
-        # POINT STRATEGY RESOLUTION
+        # STRATEGY 1: POINT TOPOLOGY
         # =========================================================================
-        # If the requested (or fallback) topology is just points, our work is done.
-        # The original uncertainty column (if it exists) is preserved as a standard
-        # DataFrame attribute rather than being structurally baked into the geometry.
         if output_type == "point":
             log_execution(logger, "Point generation complete.", level=logging.INFO)
             return gdf
-    
+
         # =========================================================================
-        # POLYGON STRATEGY - SANITIZE MISSING / INVALID DATA
+        # STRATEGY 2: POINT CLOUD TOPOLOGY
         # =========================================================================
-        # The spatial buffer method will mathematically fail if fed a NaN value,
-        # and will silently return an EMPTY geometry (not an error) if fed a
-        # negative value. Both are sanitized explicitly here so bad uncertainty
-        # data produces a loud log message rather than a silently missing row
-        # downstream.
+        if output_type == "point_cloud":
+            log_execution(logger, "Delegating to generate_spatial_point_clouds...", level=logging.INFO)
+            
+            # Extract configuration parameters (supporting standard & STAC metadata keys)
+            cfg = point_cloud_config or {}
+            
+            n_passes = cfg.get("n_passes", cfg.get("processing:n_passes", 30))
+            distribution = cfg.get("distribution", cfg.get("processing:distribution", "gaussian"))
+            random_state = cfg.get("random_state", cfg.get("random_seed", cfg.get("processing:random_seed", None)))
+            cloud_out_col = cfg.get("output_col", "point_cloud")
+
+            return self.generate_spatial_point_clouds(
+                gdf=gdf,
+                n_passes=n_passes,
+                uncertainty_col=uncert_col,
+                output_col=cloud_out_col,
+                distribution=distribution,
+                random_state=random_state,
+                logger=logger,
+            )
+
+        # =========================================================================
+        # STRATEGY 3: POLYGON TOPOLOGY (BUFFERING)
+        # =========================================================================
         missing_count = gdf[uncert_col].isna().sum()
         if missing_count > 0:
             log_execution(
@@ -1203,48 +1232,25 @@ class spatial_vector_engine(base_spatial_grid):
         if negative_count > 0:
             log_execution(
                 logger,
-                f"Clipping {negative_count} negative uncertainty value(s) to 0m; "
-                "a negative buffer distance silently collapses points to empty "
-                "geometry rather than raising.",
+                f"Clipping {negative_count} negative uncertainty value(s) to 0m.",
                 level=logging.WARNING,
             )
             gdf[uncert_col] = gdf[uncert_col].clip(lower=0)
     
-        # =========================================================================
-        # STEP 4: GEOMETRIC EXPANSION (BUFFERING) WITH CRS AWARENESS
-        # =========================================================================
         log_execution(logger, "Applying metric coordinate uncertainty buffers...", level=logging.INFO)
     
-        # Check if the user-supplied CRS is geographic (degrees) or projected (meters).
         if gdf.crs.is_geographic:
             log_execution(
                 logger,
-                "Geographic CRS detected. Dynamically mapping records to localized "
-                "UTM/UPS zones to optimize linear scale accuracy...",
+                "Geographic CRS detected. Dynamically mapping records to localized UTM/UPS zones...",
                 level=logging.INFO,
             )
     
-            # To compute true geographic longitudinal strips, we temporarily mirror
-            # coordinates into WGS84. Comparing on the resolved EPSG code (rather
-            # than the raw input string) means this correctly no-ops for any
-            # equivalent spelling of EPSG:4326 (e.g. 4326, "epsg:4326", a
-            # pyproj.CRS object), not just the exact string "EPSG:4326".
-            if gdf.crs.to_epsg() == 4326:
-                gdf_wgs84 = gdf
-            else:
-                gdf_wgs84 = gdf.to_crs("EPSG:4326")
+            gdf_wgs84 = gdf if gdf.crs.to_epsg() == 4326 else gdf.to_crs("EPSG:4326")
     
             longitudes = gdf_wgs84.geometry.x
             latitudes = gdf_wgs84.geometry.y
     
-            # ---------------------------------------------------------------
-            # Zone assignment: UTM for |lat| within standard bounds, UPS for
-            # the polar caps where UTM's convergence/scale distortion becomes
-            # unacceptable. This mirrors the standard MGRS convention:
-            #   - North polar cap:  lat >= 84°N   -> EPSG:32661 (UPS North)
-            #   - South polar cap:  lat <  80°S   -> EPSG:32761 (UPS South)
-            #   - Everything else:  standard UTM zone/hemisphere
-            # ---------------------------------------------------------------
             UPS_NORTH_EPSG = 32661
             UPS_SOUTH_EPSG = 32761
     
@@ -1257,58 +1263,40 @@ class spatial_vector_engine(base_spatial_grid):
             zone_epsg.loc[south_polar_mask] = UPS_SOUTH_EPSG
     
             if utm_mask.any():
-                # UTM zones are 6-degree longitudinal strips numbered 1-60.
-                # Longitude of exactly +180 must clamp to zone 60, not roll
-                # over into a nonexistent zone 61.
                 utm_zones = np.clip(
                     ((longitudes[utm_mask] + 180) / 6).astype(int) + 1, 1, 60
                 )
-                # 32600 handles the Northern Hemisphere, 32700 the Southern.
                 epsg_prefixes = np.where(latitudes[utm_mask] >= 0, 32600, 32700)
                 zone_epsg.loc[utm_mask] = epsg_prefixes + utm_zones
     
-            # Namespaced temp column name to avoid silently colliding with a
-            # pre-existing column of the same name in the caller's data.
             zone_col = "_coord_to_geom_zone_epsg"
             gdf[zone_col] = zone_epsg.astype(int)
     
-            # Execute buffering grouped by localized metric zone (UTM or UPS).
             log_execution(logger, "Batch-processing polygons within localized metric zones...", level=logging.INFO)
             buffered_chunks = []
     
             for zone_epsg_code, group in gdf.groupby(zone_col):
-                # Cast the localized group into its respective conformal metric projection
                 group_metric = group.to_crs(f"EPSG:{zone_epsg_code}")
-    
-                # Draw spatial boundaries using real-world meters with minimal scale distortion
                 group_metric["geometry"] = group_metric.geometry.buffer(
-                group_metric[uncert_col], resolution=quad_segs
-            )
-    
-                # Snap the newly formed polygons straight back to the user's target system
+                    group_metric[uncert_col], resolution=quad_segs
+                )
                 buffered_chunks.append(group_metric.to_crs(input_crs))
     
-            # Re-aggregate structural subsets, clear grid-zone columns, and restore indices.
-            # Wrapping explicitly in gpd.GeoDataFrame guards against pd.concat
-            # silently downgrading to a plain DataFrame / dropping CRS metadata
-            # on some geopandas/pandas version combinations.
             gdf_polygon = gpd.GeoDataFrame(
                 pd.concat(buffered_chunks).sort_index(), crs=input_crs
             )
             gdf_polygon = gdf_polygon.drop(columns=[zone_col])
         else:
-            # If the input CRS is already a metric projection (e.g., EPSG:3035),
-            # we completely bypass regional batching and draw buffers natively.
             log_execution(logger, "Projected CRS detected. Buffering directly in native units.", level=logging.INFO)
             gdf_polygon = gdf.copy()
             gdf_polygon["geometry"] = gdf_polygon.geometry.buffer(
-            gdf_polygon[uncert_col], resolution=quad_segs
-        )
+                gdf_polygon[uncert_col], resolution=quad_segs
+            )
     
         log_execution(logger, "Coordinate uncertainty polygon generation complete.", level=logging.INFO)
     
-        return gdf_polygon
-
+        return gdf_polygon    
+    
     def sanitize_geometries(
     self, 
     gdf: gpd.GeoDataFrame, 
@@ -1546,6 +1534,796 @@ class spatial_vector_engine(base_spatial_grid):
             
         return gdf
 
+    def _validate_geom_column(
+        self,
+        gdf: gpd.GeoDataFrame,
+        geom_column: str,
+        allowed_types: set,
+        context: str,
+    ) -> None:
+        """Shared precondition checks used by every geometry-type mapping function."""
+        if geom_column not in gdf.columns:
+            raise ValueError(f"geom_column '{geom_column}' not found in the input GeoDataFrame.")
+
+        # Safely cast the column to a GeoSeries. 
+        # This is strictly required because if `geom_column` is not the *active* 
+        # geometry column, pandas treats it as a standard Series of objects, 
+        # which lacks the .is_empty and .geom_type spatial accessors.
+        geo_col = gpd.GeoSeries(gdf[geom_column])
+
+        null_mask = geo_col.isna() | geo_col.is_empty
+        if null_mask.any():
+            raise ValueError(
+                f"{context}: found {int(null_mask.sum())} null/empty geometries in "
+                f"'{geom_column}'. Sanitize input (e.g. via sanitize_geometries) first."
+            )
+
+        # Dropna ensures missing geometries (which evaluate to None for geom_type) 
+        # don't trigger a false positive in the unsupported type check.
+        geom_types = set(geo_col.geom_type.dropna().unique())
+        if not geom_types <= allowed_types:
+            raise ValueError(
+                f"{context}: expected geometry types {allowed_types} in '{geom_column}', "
+                f"found unsupported type(s): {geom_types - allowed_types}"
+            )
+
+    def _build_target_grid(
+        self,
+        target_grid_name: str,
+        source_crs,
+        source_bounds: Tuple[float, float, float, float],
+        target_bbox: Optional[Tuple[float, float, float, float]] = None,
+        logger: Optional[logging.Logger] = None,
+    ) -> Tuple[gpd.GeoDataFrame, str, float]:
+        """
+        Shared grid-blueprint builder used by every geometry-type mapping function.
+
+        Returns
+        -------
+        target_grid_gdf : geopandas.GeoDataFrame
+            Columns ['grid_idx', 'geometry'], one row per aligned template cell.
+        target_crs : str
+            The resolved CRS of the target grid.
+        res : float
+            The resolution (cell size) of the target grid, in target_crs units.
+        """
+        target_crs = self.GRID_REGISTRY[target_grid_name]["crs"]
+
+        if target_bbox is not None:
+            log_execution(logger, f"Using explicitly provided target bounding box: {target_bbox}", level=logging.INFO)
+            dst_bbox = target_bbox
+        else:
+            dst_bbox = transform_bounds(source_crs, target_crs, *source_bounds)
+
+        template_da, _ = self.create_aligned_raster_template(dst_bbox, target_grid_name)
+        res = template_da.attrs["res"]
+
+        x_centers = template_da.x.values
+        y_centers = template_da.y.values
+
+        if x_centers.size == 0 or y_centers.size == 0:
+            raise ValueError(
+                "create_aligned_raster_template produced a 0-cell grid. This usually "
+                "means the source bounding box has zero width/height in an axis "
+                "(e.g. a single-point dataset landing exactly on a grid line). "
+                f"dst_bbox={dst_bbox}, grid_name={target_grid_name}."
+            )
+
+        xx, yy = np.meshgrid(x_centers, y_centers)
+        x_flat, y_flat = xx.ravel(), yy.ravel()
+        half_res = res / 2.0
+
+        # Vectorized cell construction (shapely >= 2.0) instead of a per-cell
+        # Python-level list comprehension -- meaningfully faster once grids scale
+        # into the hundreds of thousands / millions of cells.
+        cell_polygons = shapely.box(
+            x_flat - half_res, y_flat - half_res, x_flat + half_res, y_flat + half_res
+        )
+
+        target_grid_gdf = gpd.GeoDataFrame(
+            {"grid_idx": np.arange(len(cell_polygons))},
+            geometry=cell_polygons,
+            crs=target_crs,
+        )
+        return target_grid_gdf, target_crs, res
+
+    def _ensure_crs(
+            self,
+            gdf: gpd.GeoDataFrame,
+            target_crs: Union[str, int, CRS],
+            logger: Optional[logging.Logger] = None
+        ) -> gpd.GeoDataFrame:
+        """
+        Validates the CRS of a GeoDataFrame against a target CRS. 
+        Reprojects the data only if a mismatch is detected.
+
+        Parameters
+        ----------
+        gdf : geopandas.GeoDataFrame
+            The input spatial dataframe to validate.
+        target_crs : str, int, or pyproj.CRS
+            The expected coordinate reference system (e.g., "EPSG:3035", 3035).
+        logger : logging.Logger, optional
+            Logger to record reprojection events or missing CRS warnings.
+
+        Returns
+        -------
+        geopandas.GeoDataFrame
+            A GeoDataFrame guaranteed to be in the target CRS.
+        
+        Raises
+        ------
+        ValueError
+            If the input GeoDataFrame has no defined CRS.
+        """
+        if gdf.crs is None:
+            raise ValueError(
+                "Input GeoDataFrame lacks a defined CRS. Cannot safely reproject "
+                "or map to the target template."
+            )
+
+        # Standardize the target CRS to a pyproj CRS object for robust comparison
+        target = CRS.from_user_input(target_crs)
+
+        # GeoPandas handles CRS equality checks intelligently via pyproj
+        if gdf.crs == target:
+            return gdf
+        
+        if logger:
+            logger.info(
+                f"CRS mismatch detected. Reprojecting from {gdf.crs.name} "
+                f"to {target.name}..."
+            )
+            
+        return gdf.to_crs(target)
+
+    def generate_spatial_point_clouds(
+        self,
+        gdf: gpd.GeoDataFrame,
+        n_passes: int = 30,
+        uncertainty_col: str = "coordinateuncertaintyinmeters",
+        output_col: str = "point_cloud",
+        distribution: str = "gaussian",
+        random_state: Optional[int] = None,
+        logger: Optional[logging.Logger] = None,
+    ) -> gpd.GeoDataFrame:
+        """
+        Generate memory-efficient spatial point clouds around feature centroids.
+    
+        Computes randomized probability clouds using flat, vectorized NumPy arrays
+        to handle massive datasets without exploding memory. Every record receives 
+        the exact same number of sampling passes, ensuring strict conservation of 
+        statistical weight (1 occurrence = 1.0 probability mass) regardless of 
+        the spatial extent of its uncertainty.
+    
+        Parameters
+        ----------
+        gdf : gpd.GeoDataFrame
+            The input spatial dataset containing geometries and uncertainty values.
+            Must not contain null or empty geometries.
+        n_passes : int, default 30
+            The exact number of jittered points to generate per feature. Keeping
+            this uniform across all records guarantees identical statistical weight.
+        uncertainty_col : str, default 'coordinateuncertaintyinmeters'
+            The name of the column containing the uncertainty radius in meters.
+        output_col : str, default 'point_cloud'
+            The name of the new column where the generated MultiPoint clouds will
+            be stored.
+        distribution : {'gaussian', 'uniform'}, default 'gaussian'
+            The probability distribution used to scatter the points.
+            * 'gaussian': Concentrates points near the centroid. Uncertainty is
+            treated as a 3-sigma radius (sigma = uncertainty / 3).
+            * 'uniform': Scatters points evenly across the entire uncertainty disk.
+        random_state : int, optional
+            Seed for a local, independent random generator. Pass this for
+            reproducible STAC outputs.
+        logger : logging.Logger, optional
+            Logger instance for execution tracking.
+    
+        Returns
+        -------
+        gpd.GeoDataFrame
+            A copy of the input GeoDataFrame with the new `output_col` geometry
+            column, along with `passes` and `weight_per_point` columns.
+        """
+        # =========================================================================
+        # FAIL-FAST VALIDATION
+        # =========================================================================
+        if distribution not in ("gaussian", "uniform"):
+            raise ValueError("distribution must be either 'uniform' or 'gaussian'")
+    
+        if n_passes < 1:
+            raise ValueError(f"n_passes must be >= 1, got {n_passes}")
+    
+        if uncertainty_col not in gdf.columns:
+            raise ValueError(f"uncertainty_col '{uncertainty_col}' not found in input GeoDataFrame.")
+    
+        if gdf.crs is None:
+            log_execution(
+                logger,
+                "Input GeoDataFrame has no CRS defined; assuming projected units in "
+                "meters for jitter offsets. Set a CRS explicitly if this is not the case.",
+                level=logging.WARNING,
+            )
+    
+        if gdf.empty:
+            result_gdf = gdf.copy()
+            result_gdf[output_col] = None
+            result_gdf["passes"] = 0
+            result_gdf["weight_per_point"] = 0.0
+            return result_gdf
+    
+        null_geom_mask = gdf.geometry.isna() | gdf.geometry.is_empty
+        if null_geom_mask.any():
+            raise ValueError(
+                f"Found {int(null_geom_mask.sum())} null/empty geometries in gdf. "
+                "Sanitize geometries before generating point clouds."
+            )
+    
+        # Initialize isolated random state for perfect STAC reproducibility
+        rng = np.random.default_rng(random_state)
+    
+        # Extract base coordinates safely
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            centroids = gdf.geometry.centroid
+            x_coords = centroids.x.values
+            y_coords = centroids.y.values
+    
+        # Swap out NaN uncertainty values for 0 (no jitter).
+        uncertainties = gdf[uncertainty_col].fillna(0).values.astype(float)
+    
+        negative_mask = uncertainties < 0
+        if negative_mask.any():
+            log_execution(
+                logger,
+                f"Clipping {int(negative_mask.sum())} negative uncertainty value(s) to 0m.",
+                level=logging.WARNING,
+            )
+            uncertainties = np.clip(uncertainties, 0, None)
+    
+        n_features = len(gdf)
+        n_expanded = n_features * n_passes
+    
+        log_execution(
+            logger,
+            f"Generating strictly {n_passes} point(s) per feature "
+            f"({n_expanded:,} total points across {n_features:,} records).",
+            level=logging.INFO,
+        )
+    
+        # =========================================================================
+        # GENERATE EXPANDED ARRAYS IN PURE NUMPY
+        # =========================================================================
+        expanded_uncertainties = np.repeat(uncertainties, n_passes)
+        expanded_x = np.repeat(x_coords, n_passes)
+        expanded_y = np.repeat(y_coords, n_passes)
+    
+        # =========================================================================
+        # CHOOSE PROBABILITY DISTRIBUTION
+        # =========================================================================
+        if distribution == "uniform":
+            angles = rng.uniform(0, 2 * np.pi, n_expanded)
+            radii_modifiers = np.sqrt(rng.uniform(0, 1, n_expanded))
+            actual_radii = expanded_uncertainties * radii_modifiers
+    
+            delta_x = actual_radii * np.cos(angles)
+            delta_y = actual_radii * np.sin(angles)
+    
+        else:  # "gaussian"
+            sigma = expanded_uncertainties / 3.0
+            delta_x = rng.normal(loc=0.0, scale=sigma, size=n_expanded)
+            delta_y = rng.normal(loc=0.0, scale=sigma, size=n_expanded)
+    
+        # =========================================================================
+        # GEOGRAPHIC CRS CONVERSION (Meters -> Degrees)
+        # =========================================================================
+        is_geographic = gdf.crs is not None and gdf.crs.is_geographic
+        if is_geographic:
+            meters_per_deg_lat = 111320.0
+            near_pole_mask = np.abs(expanded_y) > 89.9
+            if near_pole_mask.any():
+                log_execution(
+                    logger,
+                    f"Clamping latitude for longitude-scale calculation near the poles "
+                    f"(>89.9°) for {int(near_pole_mask.sum())} point(s).",
+                    level=logging.WARNING,
+                )
+            lat_for_scale = np.clip(expanded_y, -89.9, 89.9)
+            meters_per_deg_lon = 111320.0 * np.cos(np.radians(lat_for_scale))
+    
+            delta_x = delta_x / meters_per_deg_lon
+            delta_y = delta_y / meters_per_deg_lat
+    
+        new_x = expanded_x + delta_x
+        new_y = expanded_y + delta_y
+    
+        if is_geographic:
+            new_x = ((new_x + 180.0) % 360.0) - 180.0
+    
+        # =========================================================================
+        # COMPRESS BACK TO MULTIPOINTS (Reshape Optimization)
+        # =========================================================================
+        # Because every row has strictly `n_passes` points, we no longer need to 
+        # compute variable slice indices. We reshape instantly in C-contiguous memory.
+        coords_2d = np.column_stack((new_x, new_y))
+        grouped_coords = coords_2d.reshape(n_features, n_passes, 2)
+        
+        from shapely.geometry import MultiPoint
+        multipoints = [MultiPoint(pts) for pts in grouped_coords]
+    
+        # =========================================================================
+        # ATTACH TO DATAFRAME
+        # =========================================================================
+        result_gdf = gdf.copy()
+        result_gdf[output_col] = multipoints
+    
+        # Track conservation of mass
+        result_gdf["passes"] = n_passes
+        result_gdf["weight_per_point"] = 1.0 / n_passes
+    
+        return result_gdf
+
+    def _compute_home_cell_mapping(
+        self,
+        reference_geom: gpd.GeoSeries,
+        uid_values,
+        uid_col_name: str,
+        tree: KDTree,
+        grid_idx_values: np.ndarray,
+        res: float,
+        output_col_name: str = "centroid_grid_idx",
+    ) -> pd.DataFrame:
+        """
+        Shared helper: nearest target-grid-cell centroid to each reference
+        geometry's own centroid. 
+        """
+        epsilon = res * 1e-6
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            centroids = reference_geom.centroid
+            coords = np.column_stack([centroids.x.values + epsilon, centroids.y.values + epsilon])
+    
+        _, nearest_idx = tree.query(coords)
+        return pd.DataFrame({
+            uid_col_name: uid_values,
+            output_col_name: grid_idx_values[nearest_idx],
+        })
+    
+    def map_points_to_template(
+        self,
+        source_gdf: gpd.GeoDataFrame,
+        target_grid_name: str,
+        geom_column: str = "geometry",
+        output_col: str = "grid_idx",
+        method: str = "intersect",
+        target_bbox: Optional[Tuple[float, float, float, float]] = None,
+        logger: Optional[logging.Logger] = None,
+    ) -> gpd.GeoDataFrame:
+        if method not in ("intersect", "kdtree"):
+            raise ValueError("method must be 'kdtree' or 'intersect'.")
+    
+        # FETCH AND VALIDATE CRS EARLY
+        target_crs = self.GRID_REGISTRY[target_grid_name]["crs"]
+        source_gdf = self._ensure_crs(source_gdf, target_crs, logger)
+    
+        if source_gdf.empty:
+            log_execution(logger, "map_points_to_template: source_gdf is empty; returning an empty copy.", level=logging.WARNING)
+            result = source_gdf.copy()
+            result[output_col] = pd.array([], dtype="Int64")
+            return result
+    
+        self._validate_geom_column(source_gdf, geom_column, {"Point"}, "map_points_to_template")
+    
+        if output_col in source_gdf.columns:
+            log_execution(logger, f"output_col '{output_col}' already exists in source_gdf and will be overwritten.", level=logging.WARNING)
+    
+        target_grid_gdf, _, res = self._build_target_grid(
+            target_grid_name=target_grid_name,
+            source_crs=source_gdf.crs,
+            source_bounds=source_gdf.total_bounds,
+            target_bbox=target_bbox,
+            logger=logger,
+        )
+
+        # OVERWRITE LOCAL INDICES WITH DETERMINISTIC GLOBAL INDICES
+        grid_centroids = target_grid_gdf.geometry.centroid
+        target_grid_gdf["grid_idx"] = self.calculate_deterministic_global_indices(
+            x_coords=grid_centroids.x.values,
+            y_coords=grid_centroids.y.values,
+            grid_name=target_grid_name,
+            logger=logger
+        )
+    
+        _uid_col = "_map_pts_src_uid_tmp"
+        work_df = source_gdf[[geom_column]].copy()
+        work_df[_uid_col] = source_gdf.index
+        # No need for .to_crs() here; it is already guaranteed by _ensure_crs
+        work_df = work_df.set_geometry(geom_column, crs=source_gdf.crs)
+    
+        if method == "kdtree":
+            log_execution(logger, "Mapping simple points via KDTree...", level=logging.INFO)
+            tree = KDTree(np.column_stack([grid_centroids.x.values, grid_centroids.y.values]))
+    
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", UserWarning)
+                geom_coords = np.column_stack([work_df.geometry.x, work_df.geometry.y])
+    
+            _, nearest_idx = tree.query(geom_coords)
+            mapping = pd.DataFrame({
+                _uid_col: work_df[_uid_col].values,
+                output_col: target_grid_gdf["grid_idx"].values[nearest_idx],
+            })
+    
+        else:
+            log_execution(logger, "Mapping simple points via spatial intersection...", level=logging.INFO)
+            joined = gpd.sjoin(work_df, target_grid_gdf, how="inner", predicate="intersects")
+    
+            best_match = (
+                joined.sort_values(
+                    by=[_uid_col, "grid_idx"],
+                    ascending=[True, True],
+                    kind="mergesort",
+                ).drop_duplicates(subset=[_uid_col])
+            )
+            mapping = best_match[[_uid_col, "grid_idx"]].rename(columns={"grid_idx": output_col})
+    
+            unmatched_count = work_df[_uid_col].nunique() - mapping[_uid_col].nunique()
+            if unmatched_count > 0:
+                log_execution(logger, f"{unmatched_count} record(s) fell outside the grid extent.", level=logging.WARNING)
+    
+        result_gdf = source_gdf.copy()
+        result_gdf[_uid_col] = result_gdf.index
+        result_gdf = result_gdf.merge(mapping, on=_uid_col, how="left")
+        result_gdf.index = source_gdf.index
+        result_gdf = result_gdf.drop(columns=[_uid_col])
+    
+        if result_gdf[output_col].isna().any():
+            result_gdf[output_col] = result_gdf[output_col].astype("Int64")
+    
+        return result_gdf
+    
+    def map_point_cloud_to_template(
+        self,
+        source_gdf: gpd.GeoDataFrame,
+        target_grid_name: str,
+        geom_column: str = "point_cloud",
+        output_col: str = "grid_idx",
+        mode: str = "fractional",
+        classify_method: str = "intersect",
+        fraction_col: str = "fraction",
+        target_bbox: Optional[Tuple[float, float, float, float]] = None,
+        logger: Optional[logging.Logger] = None,
+    ) -> Union[gpd.GeoDataFrame, pd.DataFrame]:
+        if mode not in ("fractional", "classify"):
+            raise ValueError("mode must be 'fractional' or 'classify'.")
+        if mode == "classify" and classify_method not in ("intersect", "kdtree"):
+            raise ValueError("classify_method must be 'kdtree' or 'intersect'.")
+
+        # 1. CAPTURE ORIGINAL CRS BEFORE REPROJECTION
+        orig_crs = source_gdf.crs
+
+        # 2. FETCH TARGET CRS AND ALIGN ACTIVE GEOMETRY
+        target_crs = self.GRID_REGISTRY[target_grid_name]["crs"]
+        source_gdf = self._ensure_crs(source_gdf, target_crs, logger)
+
+        self._validate_geom_column(source_gdf, geom_column, {"MultiPoint", "Point"}, "map_point_cloud_to_template")
+
+        original_geom_name = source_gdf.geometry.name
+        self._validate_geom_column(
+            source_gdf, original_geom_name, {"Point"}, "map_point_cloud_to_template (original geometry)"
+        )
+
+        from geopandas.array import GeometryDtype as _GeometryDtype
+        geometry_cols = [c for c in source_gdf.columns if isinstance(source_gdf[c].dtype, _GeometryDtype)]
+        preserve_cols = [c for c in source_gdf.columns if c not in geometry_cols]
+
+        if source_gdf.empty:
+            log_execution(logger, "map_point_cloud_to_template: source_gdf is empty; returning an empty result.", level=logging.WARNING)
+            if mode == "classify":
+                result = source_gdf.copy()
+                result[output_col] = pd.array([], dtype="Int64")
+                result["centroid_grid_idx"] = pd.array([], dtype="Int64")
+                return result
+            return pd.DataFrame(columns=[output_col, "centroid_grid_idx", fraction_col] + preserve_cols)
+
+        if output_col in source_gdf.columns:
+            log_execution(logger, f"output_col '{output_col}' already exists in source_gdf and will be overwritten.", level=logging.WARNING)
+
+        target_grid_gdf, _, res = self._build_target_grid(
+            target_grid_name=target_grid_name,
+            source_crs=source_gdf.crs,
+            source_bounds=source_gdf.total_bounds,
+            target_bbox=target_bbox,
+            logger=logger,
+        )
+
+        # OVERWRITE LOCAL INDICES WITH DETERMINISTIC GLOBAL INDICES
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            grid_centroids = target_grid_gdf.geometry.centroid
+
+        target_grid_gdf["grid_idx"] = self.calculate_deterministic_global_indices(
+            x_coords=grid_centroids.x.values,
+            y_coords=grid_centroids.y.values,
+            grid_name=target_grid_name,
+            logger=logger
+        )
+
+        # 3. CONSTRUCT WORK_DF AND REPROJECT SECONDARY POINT CLOUD COLUMN IF CRS CHANGED
+        _uid_col = "_map_cloud_src_uid_tmp"
+        work_df = source_gdf[[geom_column]].copy()
+        work_df[_uid_col] = source_gdf.index
+
+        if orig_crs != target_crs:
+            work_df[geom_column] = gpd.GeoSeries(work_df[geom_column], crs=orig_crs).to_crs(target_crs)
+
+        work_df = work_df.set_geometry(geom_column, crs=target_crs)
+
+        # 4. TRACK ORIGINAL SOURCE CENTROIDS
+        log_execution(logger, "Mapping original source points to determine true home grid cells...", level=logging.INFO)
+        orig_pts = source_gdf[[original_geom_name]].copy()
+        orig_pts = orig_pts.set_geometry(original_geom_name, crs=target_crs)
+
+        tree = KDTree(np.column_stack([grid_centroids.x.values, grid_centroids.y.values]))
+        grid_idx_values = target_grid_gdf["grid_idx"].values
+
+        centroid_mapping = self._compute_home_cell_mapping(
+            reference_geom=orig_pts.geometry,
+            uid_values=source_gdf.index,
+            uid_col_name=_uid_col,
+            tree=tree,
+            grid_idx_values=grid_idx_values,
+            res=res,
+        )
+
+        if mode == "classify" and classify_method == "kdtree":
+            log_execution(logger, "Classifying point clouds via mathematical cloud centroid...", level=logging.INFO)
+            mapping = self._compute_home_cell_mapping(
+                reference_geom=work_df.geometry,
+                uid_values=work_df[_uid_col].values,
+                uid_col_name=_uid_col,
+                tree=tree,
+                grid_idx_values=grid_idx_values,
+                res=res,
+                output_col_name=output_col,
+            )
+            mapping = mapping.merge(centroid_mapping, on=_uid_col, how="left")
+
+            result_gdf = source_gdf.copy()
+            result_gdf[_uid_col] = result_gdf.index
+            result_gdf = result_gdf.merge(mapping, on=_uid_col, how="left").drop(columns=[_uid_col])
+            result_gdf.index = source_gdf.index
+            for col in (output_col, "centroid_grid_idx"):
+                if result_gdf[col].isna().any():
+                    result_gdf[col] = result_gdf[col].astype("Int64")
+            return result_gdf
+
+        log_execution(logger, "Exploding clouds and intersecting with template mesh...", level=logging.INFO)
+        exploded_df = work_df.explode(index_parts=False).reset_index(drop=True)
+
+        true_totals = exploded_df.groupby(_uid_col).size().rename("true_total_passes").reset_index()
+
+        joined = gpd.sjoin(exploded_df, target_grid_gdf, how="inner", predicate="intersects")
+        counts = joined.groupby([_uid_col, "grid_idx"]).size().reset_index(name="pt_count")
+
+        if mode == "classify":
+            log_execution(logger, "Assigning clouds to grid cell with maximum point density...", level=logging.INFO)
+            best_match = (
+                counts.sort_values(
+                    by=[_uid_col, "pt_count", "grid_idx"],
+                    ascending=[True, False, True],
+                    kind="mergesort",
+                ).drop_duplicates(subset=[_uid_col])
+            )
+            mapping = best_match[[_uid_col, "grid_idx"]].rename(columns={"grid_idx": output_col})
+            mapping = mapping.merge(centroid_mapping, on=_uid_col, how="left")
+
+            unmatched_count = work_df[_uid_col].nunique() - mapping[_uid_col].dropna().nunique()
+            if unmatched_count > 0:
+                log_execution(
+                    logger,
+                    f"{unmatched_count} point cloud(s) had no intersecting grid cell and "
+                    f"received a null '{output_col}' assignment.",
+                    level=logging.WARNING,
+                )
+
+            result_gdf = source_gdf.copy()
+            result_gdf[_uid_col] = result_gdf.index
+            result_gdf = result_gdf.merge(mapping, on=_uid_col, how="left").drop(columns=[_uid_col])
+            result_gdf.index = source_gdf.index
+            for col in (output_col, "centroid_grid_idx"):
+                if result_gdf[col].isna().any():
+                    result_gdf[col] = result_gdf[col].astype("Int64")
+            return result_gdf
+
+        log_execution(logger, "Calculating fractional probability weights per grid cell...", level=logging.INFO)
+        counts = counts.merge(true_totals, on=_uid_col, how="left")
+        counts[fraction_col] = counts["pt_count"] / counts["true_total_passes"]
+
+        per_record_total_fraction = counts.groupby(_uid_col)[fraction_col].sum()
+        partial_coverage_count = int((per_record_total_fraction < 0.99).sum())
+        if partial_coverage_count > 0:
+            log_execution(
+                logger,
+                f"{partial_coverage_count} point cloud(s) have some jittered points falling "
+                "outside the grid extent; their returned fractions sum to < 1.0.",
+                level=logging.WARNING,
+            )
+
+        fully_unmatched = len(source_gdf) - counts[_uid_col].nunique()
+        if fully_unmatched > 0:
+            log_execution(logger, f"{fully_unmatched} point cloud(s) fell entirely outside the grid.", level=logging.WARNING)
+
+        counts = counts.rename(columns={"grid_idx": output_col})
+        result_columns = [output_col, "centroid_grid_idx", fraction_col] + preserve_cols
+
+        result_df = counts[[_uid_col, output_col, fraction_col]].merge(
+            centroid_mapping, on=_uid_col, how="left"
+        ).merge(
+            source_gdf[preserve_cols].reset_index().rename(columns={source_gdf.index.name or "index": _uid_col}),
+            on=_uid_col,
+            how="left",
+        )
+        result_df = result_df.drop(columns=[_uid_col]).reset_index(drop=True)
+
+        return result_df[result_columns]    
+    
+    def map_polygon_to_template(
+        self,
+        source_gdf: gpd.GeoDataFrame,
+        target_grid_name: str,
+        geom_column: str = "geometry",
+        output_col: str = "grid_idx",
+        target_bbox: Optional[Tuple[float, float, float, float]] = None,
+        min_areal_fraction: float = 1e-6,
+        include_centroid_tracking: bool = True,
+        logger: Optional[logging.Logger] = None,
+    ) -> pd.DataFrame:
+        
+        # 1. FETCH AND VALIDATE CRS EARLY
+        target_crs = self.GRID_REGISTRY[target_grid_name]["crs"]
+        source_gdf = self._ensure_crs(source_gdf, target_crs, logger)
+    
+        self._validate_geom_column(source_gdf, geom_column, {"Polygon", "MultiPolygon"}, "map_polygon_to_template")
+    
+        invalid_mask = ~source_gdf[geom_column].is_valid
+        if invalid_mask.any():
+            raise ValueError(
+                f"map_polygon_to_template: found {int(invalid_mask.sum())} topologically "
+                f"invalid geometries in '{geom_column}'. Run sanitize_geometries first."
+            )
+    
+        from pyproj import CRS as _CRS
+        from geopandas.array import GeometryDtype as _GeometryDtype
+        
+        is_geographic_grid = _CRS.from_user_input(target_crs).is_geographic
+        # Global equal-area fallback projection for accurate metric area calculations
+        EQUAL_AREA_CRS = "EPSG:6933" 
+
+        geometry_cols = [c for c in source_gdf.columns if isinstance(source_gdf[c].dtype, _GeometryDtype)]
+        preserve_cols = [c for c in source_gdf.columns if c not in geometry_cols]
+        result_columns = [output_col] + (["centroid_grid_idx"] if include_centroid_tracking else []) + ["areal_fraction"] + preserve_cols
+    
+        if source_gdf.empty:
+            log_execution(logger, "map_polygon_to_template: source_gdf is empty; returning an empty result.", level=logging.WARNING)
+            return pd.DataFrame(columns=result_columns)
+    
+        if output_col in source_gdf.columns:
+            log_execution(
+                logger,
+                f"output_col '{output_col}' already exists in source_gdf and will be overwritten in the result.",
+                level=logging.WARNING,
+            )
+    
+        target_grid_gdf, _, res = self._build_target_grid(
+            target_grid_name=target_grid_name,
+            source_crs=source_gdf.crs,
+            source_bounds=source_gdf.total_bounds,
+            target_bbox=target_bbox,
+            logger=logger,
+        )
+
+        # OVERWRITE LOCAL INDICES WITH DETERMINISTIC GLOBAL INDICES
+        grid_centroids = target_grid_gdf.geometry.centroid
+        target_grid_gdf["grid_idx"] = self.calculate_deterministic_global_indices(
+            x_coords=grid_centroids.x.values,
+            y_coords=grid_centroids.y.values,
+            grid_name=target_grid_name,
+            logger=logger
+        )
+    
+        log_execution(logger, "Preparing polygons and calculating baseline continuous metric areas...", level=logging.INFO)
+        _uid_col = "_map_poly_src_uid_tmp"
+        _area_col = "_map_poly_source_area_tmp"
+    
+        source_df = source_gdf.copy()
+        source_df[_uid_col] = source_df.index
+        source_df = source_df.set_geometry(geom_column, crs=source_gdf.crs)
+        
+        # Calculate source area in metric square meters (m²)
+        if is_geographic_grid:
+            source_df[_area_col] = source_df.to_crs(EQUAL_AREA_CRS).geometry.area
+        else:
+            source_df[_area_col] = source_df.geometry.area
+    
+        zero_area_mask = source_df[_area_col] <= 0
+        if zero_area_mask.any():
+            log_execution(
+                logger,
+                f"Dropping {int(zero_area_mask.sum())} source record(s) with zero or "
+                "negative area (degenerate geometry) before overlay.",
+                level=logging.WARNING,
+            )
+            source_df = source_df[~zero_area_mask]
+    
+        centroid_mapping = None
+        if include_centroid_tracking:
+            log_execution(logger, "Mapping polygon centroids to determine home grid cells...", level=logging.INFO)
+            tree = KDTree(np.column_stack([grid_centroids.x.values, grid_centroids.y.values]))
+            centroid_mapping = self._compute_home_cell_mapping(
+                reference_geom=source_df.geometry,
+                uid_values=source_df[_uid_col].values,
+                uid_col_name=_uid_col,
+                tree=tree,
+                grid_idx_values=target_grid_gdf["grid_idx"].values,
+                res=res,
+            )
+    
+        log_execution(logger, "Executing polygon network fragmentation against template mesh...", level=logging.INFO)
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=".*keep_geom_type.*")
+            intersections = gpd.overlay(
+                source_df[[_uid_col, _area_col, geom_column]],
+                target_grid_gdf,
+                how="intersection",
+            )
+    
+        if intersections.empty:
+            log_execution(logger, "No intersections found between source polygons and target template.", level=logging.WARNING)
+            return pd.DataFrame(columns=result_columns)
+    
+        # Calculate intersection area in metric square meters (m²)
+        if is_geographic_grid:
+            intersections["intersect_area"] = intersections.to_crs(EQUAL_AREA_CRS).geometry.area
+        else:
+            intersections["intersect_area"] = intersections.geometry.area
+
+        intersections["areal_fraction"] = intersections["intersect_area"] / intersections[_area_col]
+        intersections = intersections[intersections["areal_fraction"] > min_areal_fraction]
+    
+        per_record_total_fraction = intersections.groupby(_uid_col)["areal_fraction"].sum()
+        partial_coverage_count = int((per_record_total_fraction < 0.99).sum())
+        if partial_coverage_count > 0:
+            log_execution(
+                logger,
+                f"{partial_coverage_count} polygon(s) have some area falling outside the "
+                "grid extent; their returned areal_fraction values sum to < 1.0 for that record.",
+                level=logging.WARNING,
+            )
+    
+        unmatched_count = source_df[_uid_col].nunique() - intersections[_uid_col].nunique()
+        if unmatched_count > 0:
+            log_execution(
+                logger,
+                f"{unmatched_count} source record(s) had no intersection with the target grid.",
+                level=logging.WARNING,
+            )
+    
+        intersections = intersections.rename(columns={"grid_idx": output_col})
+    
+        result = intersections[[_uid_col, output_col, "areal_fraction"]]
+        if include_centroid_tracking:
+            result = result.merge(centroid_mapping, on=_uid_col, how="left")
+        result = result.merge(
+            source_gdf[preserve_cols].reset_index().rename(columns={source_gdf.index.name or "index": _uid_col}),
+            on=_uid_col,
+            how="left",
+        )
+        result = result.drop(columns=[_uid_col]).reset_index(drop=True)
+    
+        return result[result_columns]    
+    
     def transform_cellCollection_to_template(
         self, 
         source_gdf: gpd.GeoDataFrame, 
