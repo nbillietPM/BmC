@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 import gc
+import time 
 
 import yaml
 import sys
@@ -13,19 +14,23 @@ import zipfile
 import glob
 from pathlib import Path
 
+
 import numpy as np
 import xarray as xr
 import pandas as pd
 import rioxarray
+from rioxarray import set_options
+from rioxarray.enum import Convention
 from osgeo import gdal
 from pyproj import CRS, Transformer
+import rasterio
 from rasterio.warp import transform_bounds
 from rasterio.transform import from_origin
 from rasterio.enums import Resampling
 
 from bmc.utils.spatial import build_envelope_from_file
 from bmc.utils.io import parallel_fetch_rasters
-from bmc.utils.logger import log_execution
+from bmc.utils.logger import log_execution, ResourceProfiler
 
 from bmc.engine.spatial import spatial_engine
 
@@ -325,12 +330,45 @@ class spatiotemporal_cube(spatial_engine, ABC):
         recipe: Dict[str, Any], 
         max_workers: int = 10,
         logger: Optional[logging.Logger] = None
-    ) -> Dict[str, xr.Dataset]:
-        """The universal single-pass rectangular processing loop."""
+    ) -> Dict[str, Dict[str, str]]:
+        """
+        The universal out-of-core spatial processing loop.
         
-        # Handle configuration structure (from generate_cube_recipe)
+        This method executes the spatiotemporal pipeline by fetching raw spatial 
+        data, harmonizing spatial bounds, and leveraging a hybrid multithreaded worker 
+        pool to project individual 2D slices. 
+        
+        It utilizes a "Disk-Spilling Data Lake" architecture: finished multidimensional 
+        variables are immediately written to a nested directory structure on disk 
+        and destroyed from RAM. The function returns a lightweight path catalog 
+        instead of a monolithic memory object.
+
+        Parameters
+        ----------
+        recipe : dict
+            The parsed YAML configuration dictating the bounds, grids, and targets.
+        max_workers : int, optional
+            The maximum number of parallel threads to use for both network fetching 
+            and GDAL reprojection. Defaults to 10.
+        logger : logging.Logger, optional
+            Logger instance for execution tracking. If None, one is automatically created.
+
+        Returns
+        -------
+        Dict[str, Dict[str, str]]
+            A catalog dictionary mapping processing levels to their explicitly 
+            generated files on disk (e.g., {'bioclim': {'bio01': './path/to/bio01.nc'}}).
+        """
+        
+        # ==========================================
+        # 1. Initialization & Spatial Framework
+        # ==========================================
         paths_cfg = recipe.get('paths', {})
-        base_dir = paths_cfg.get('base_dir') or recipe.get('base_dir', './outputs/')
+        base_dir = paths_cfg.get('base_dir') or recipe.get('base_dir', './cubing_output/')
+        cube_name = recipe.get('cube_name', 'bmd_default_cube')
+        
+        dataset_name = recipe.get('dataset_name', self.__class__.__name__.lower().replace('_cube', ''))
+        export_format = recipe.get('export_as', {}).get('format', 'netcdf').lower()
         
         if logger is None:
             log_dir = os.path.join(base_dir, 'logs')
@@ -339,22 +377,21 @@ class spatiotemporal_cube(spatial_engine, ABC):
             logger = self._setup_pipeline_logger(logger_name="spatiotemporal_cube", log_filepath=log_filepath)
             self.logger = logger
 
+        tracker = ResourceProfiler(log_dir=os.path.join(base_dir, 'logs'))
+        log_execution(logger, "You are using the correct version", logging.INFO)
         log_execution(logger, "\n=== Initiating Out-of-Core Data Cube Generation ===", logging.INFO)
         
-        # 1. Ask Child to Generate Plan
         execution_plan = self.generate_execution_plan(recipe, logger)
         if execution_plan.empty:
             log_execution(logger, "Terminating pipeline: no candidate asset catalog generated.", logging.WARNING)
             return {}
 
-        # 2. Resolve Master Grid
         spatial_cfg = recipe.get('spatial', {})
         target_grid_key = self.resolve_target_grid(spatial_cfg, logger)
         grid_info = self.GRID_REGISTRY[target_grid_key]
         target_crs = grid_info["crs"]
         target_res = grid_info["resolution"]
         
-        # 3. Calculate Rectangular Bounds
         bbox_cfg = spatial_cfg.get('bbox', {})
         wgs84_bounds = (
             min(bbox_cfg.get('long_min', 0), bbox_cfg.get('long_max', 0)),
@@ -370,7 +407,6 @@ class spatiotemporal_cube(spatial_engine, ABC):
         log_execution(logger, f"  WGS84 Bounds: [MinLon: {wgs84_bounds[0]:.4f}, MinLat: {wgs84_bounds[1]:.4f}, MaxLon: {wgs84_bounds[2]:.4f}, MaxLat: {wgs84_bounds[3]:.4f}]", logging.INFO)
         log_execution(logger, f"  Proj Bounds : [MinX: {target_bounds[0]:.2f}, MinY: {target_bounds[1]:.2f}, MaxX: {target_bounds[2]:.2f}, MaxY: {target_bounds[3]:.2f}]\n", logging.INFO)
 
-        # 4. Fetch the Data
         sample_file_path = execution_plan.iloc[0]['vsi_path']
         source_bbox = build_envelope_from_file(
             target_crs=target_crs,
@@ -379,74 +415,232 @@ class spatiotemporal_cube(spatial_engine, ABC):
             pixel_buffer=5,
             logger=logger
         )
-        
-        target_paths = execution_plan['vsi_path'].unique().tolist()
-        raw_fetched_data = parallel_fetch_rasters(target_paths, source_bbox, max_workers)
 
-        # 5. Ask Child to Inject Metadata
-        level_variable_bins: Dict[str, Dict[str, List[xr.DataArray]]] = {
+        level_reprojected_paths: Dict[str, Dict[str, str]] = {
             lvl: {} for lvl in execution_plan['level'].unique()
         }
-        for _, row in execution_plan.iterrows():
-            raw_da = raw_fetched_data.get(row['vsi_path'])
-            if raw_da is not None:
-                level, structured_da = self.parse_metadata(row, raw_da)
-                level_variable_bins[level].setdefault(str(structured_da.name), []).append(structured_da)
 
-        final_cubes: Dict[str, xr.Dataset] = {}
-
-        # 6. Harmonize and Warp
-        for level, variables_dict in level_variable_bins.items():
-            if not variables_dict: continue
+        grouped_plan = execution_plan.groupby(['level', 'variable'])
+        
+        # ==========================================
+        # 2. Main Processing Loop (Per Variable)
+        # ==========================================
+        for (level, var_name), group_df in grouped_plan:
+            log_execution(logger, f"\nProcessing Level: '{level}' | Variable: '{var_name}'...", logging.INFO)
+            tracker.log_usage(f"START Processing {var_name}")
             
-            log_execution(logger, f"Harmonizing and warping level '{level}' cubes in single-pass...", logging.INFO)
-            reprojected_vars = []
+            # --- Network Fetch ---
+            target_paths = group_df['vsi_path'].unique().tolist()
+            with tracker.track_strain(f"Network Fetch ({var_name})"):
+                raw_fetched_data = parallel_fetch_rasters(target_paths, source_bbox, max_workers)
             
-            for var_name, da_list in variables_dict.items():
+            # --- Metadata Injection ---
+            da_list = []
+            for _, row in group_df.iterrows():
+                raw_da = raw_fetched_data.get(row['vsi_path'])
+                if raw_da is not None:
+                    _, structured_da = self.parse_metadata(row, raw_da)
+                    da_list.append(structured_da)
+                    
+            if not da_list:
+                log_execution(logger, f"No valid data returned for {var_name}. Skipping.", logging.WARNING)
+                continue
                 
-                # Z-Stacking
-                base_x, base_y = da_list[0].coords['x'], da_list[0].coords['y']
-                snapped_list = [d.assign_coords(x=base_x, y=base_y) for d in da_list]
-                
-                z_dim = [dim for dim in snapped_list[0].dims if dim not in ['x', 'y']][0]
-                snapped_list.sort(key=lambda da: da.coords[z_dim].values[0])
-                
-                combined_da = xr.concat(snapped_list, dim=z_dim)
-                combined_da.name = var_name
-
-                # GDAL Rules & Metadata Catch
-                rule = self.get_resample_rule(var_name)
-                combined_da = self._sanitize_spatial_geometry(combined_da, default_crs="EPSG:4326", logger=logger)
-                non_spatial_coords = {k: v for k, v in combined_da.coords.items() if k not in ['x', 'y', 'spatial_ref']}
-
-                # Affine Reprojection utilizing your parent method
-                cache_dir = os.path.join(base_dir, "warp_cache", level)
-                os.makedirs(cache_dir, exist_ok=True)
-                out_filepath = os.path.join(cache_dir, f"{var_name}_aligned.tif")
-                
-                warped_da = self.affine_reproject(
-                    input_data=combined_da, 
-                    output_filepath=out_filepath, 
-                    grid_name=target_grid_key, 
-                    resample_keyword=rule, 
-                    logger=logger
-                )
-                
-                # Mathematical Rectangular Clip
-                warped_da = warped_da.rio.clip_box(*target_bounds)
-                
-                # Metadata Release
-                warped_da = warped_da.rename({'band': z_dim})
-                warped_da = warped_da.assign_coords(non_spatial_coords)
-                warped_da.name = var_name
-                
-                reprojected_vars.append(warped_da)
-                
-            # Merge and MultiIndex (using child's rules)
-            level_cube = xr.merge(reprojected_vars, combine_attrs='drop_conflicts', join='outer')
-            final_cubes[level] = self.apply_multi_index(level, level_cube)
+            base_x, base_y = da_list[0].coords['x'], da_list[0].coords['y']
+            snapped_list = [d.assign_coords(x=base_x, y=base_y) for d in da_list]
             
-        log_execution(logger, "=== Data Cube Framework Generation Complete ===", logging.INFO)
-        return final_cubes
-    
-#class spatiotemporal_vector_cube():
+            z_dim = [dim for dim in snapped_list[0].dims if dim not in ['x', 'y']][0]
+            snapped_list.sort(key=lambda da: da.coords[z_dim].values[0])
+            
+            log_execution(logger, f"  -> Compiling master metadata coordinates for {var_name}...", logging.INFO)
+            z_vals = np.array([da[z_dim].values for da in snapped_list]).flatten()
+            full_meta_coords = {z_dim: z_vals}
+            
+            for k in snapped_list[0].coords.keys():
+                if k not in ['x', 'y', 'spatial_ref', z_dim]:
+                    meta_vector = np.array([da[k].values for da in snapped_list]).flatten()
+                    full_meta_coords[k] = (z_dim, meta_vector)
+            
+            rule = self.get_resample_rule(var_name)
+            cache_dir = os.path.join(base_dir, "warp_cache", level, var_name)
+            os.makedirs(cache_dir, exist_ok=True)
+
+            # ==========================================
+            # 3. Hybrid 2D Slice Warping (The Engine)
+            # ==========================================
+            # Calculate the physical RAM footprint of a single 2D slice. 
+            # This metric acts as the trigger switch between our two parallelization architectures.
+            slice_size_mb = snapped_list[0].nbytes / (1024 * 1024)
+            log_execution(logger, f"  -> Estimated single slice size: {slice_size_mb:.2f} MB", logging.INFO)
+
+            def _warp_worker(da_2d: xr.DataArray, index: int, gdal_threads: str) -> str:
+                """
+                Worker function executed during both Fast-Path and Safe-Path architectures.
+                
+                CRITICAL C++ SANDBOXING:
+                We wrap the execution in `rasterio.Env()`. This creates an isolated local 
+                state for GDAL's underlying C binaries. By dynamically passing `GDAL_NUM_THREADS`, 
+                we allow the orchestrator to dictate whether GDAL uses 1 core (during Python Threading) 
+                or all available cores (during GDAL Sequential Threading).
+                """
+                with rasterio.Env(GDAL_NUM_THREADS=gdal_threads, VSI_CACHE="FALSE"):
+                    try:
+                        nodata_val = da_2d.rio.nodata
+                        if nodata_val is not None:
+                            if np.issubdtype(da_2d.dtype, np.integer):
+                                limits = np.iinfo(da_2d.dtype)
+                                if not (limits.min <= nodata_val <= limits.max):
+                                    da_2d = da_2d.astype('float32')
+                            da_2d.rio.write_nodata(nodata_val, inplace=True)
+
+                        if '_FillValue' in da_2d.attrs:
+                            del da_2d.attrs['_FillValue']
+
+                        da_2d = self._sanitize_spatial_geometry(da_2d, default_crs="EPSG:4326", logger=None)
+                        out_filepath = os.path.join(cache_dir, f"slice_{index:04d}.tif")
+                        
+                        self.affine_reproject(
+                            input_data=da_2d, 
+                            output_filepath=out_filepath, 
+                            grid_name=target_grid_key, 
+                            resample_keyword=rule, 
+                            num_threads=gdal_threads, # EXPLICITLY PASSED
+                            logger=None  
+                        )
+                        return out_filepath
+                    except Exception as e:
+                        # GRACEFUL DEGRADATION:
+                        # Catch network tile corruption gracefully so the pipeline survives.
+                        log_execution(logger, f"CRITICAL: GDAL failed to warp slice {index}. Error: {e}", logging.ERROR)
+                        return ""
+
+            warped_tif_paths = []
+            
+            # =================================================================================
+            # ARCHITECTURE ROUTER
+            # The script checks the payload size and dynamically chooses the safest strategy.
+            # =================================================================================
+            if slice_size_mb < 50.0:
+                # ---------------------------------------------------------
+                # FAST PATH: Parallel Slices (Python-Level Threading)
+                # ---------------------------------------------------------
+                # Small payloads avoid C++ Threading Chunking Overhead by routing multiple
+                # slices simultaneously across Python threads.
+                log_execution(logger, "  -> Small payload detected. Utilizing high-speed parallel slice warping.", logging.INFO)
+                num_python_threads = min(os.cpu_count() or 4, len(snapped_list), max_workers)
+                
+                with tracker.track_strain(f"Parallel Slice Warp ({var_name})"):
+                    from concurrent.futures import ThreadPoolExecutor
+                    with ThreadPoolExecutor(max_workers=num_python_threads) as executor:
+                        futures = [
+                            executor.submit(_warp_worker, da, i, "1") 
+                            for i, da in enumerate(snapped_list)
+                        ]
+                        warped_tif_paths = [p for p in (f.result() for f in futures) if p != ""]
+            
+            else:
+                # ---------------------------------------------------------
+                # SAFE PATH: Parallel Pixels (C++ Level Threading)
+                # ---------------------------------------------------------
+                # Massive continental payloads route sequentially through Python to avoid 
+                # C++ RAM collision (Segmentation Faults), but unlock maximum GDAL CPU cores natively.
+                log_execution(logger, "  -> Massive payload detected. Utilizing ultra-stable sequential multi-core warping.", logging.INFO)
+                num_gdal_threads = str(min(os.cpu_count() or 4, max_workers))
+                
+                with tracker.track_strain(f"Sequential Multi-Core Warp ({var_name})"):
+                    for i, da in enumerate(snapped_list):
+                        result_path = _warp_worker(da, i, num_gdal_threads)
+                        if result_path != "":
+                            warped_tif_paths.append(result_path)
+
+            # ==========================================
+            # 4. Robust 3D Re-assembly 
+            # ==========================================
+            aligned_slices = []
+            log_execution(logger, f"  -> Reassembling 3D {var_name} cube from warped slices...", logging.INFO)
+            
+            for tif_path in warped_tif_paths:
+                warped_2d = rioxarray.open_rasterio(tif_path, chunks=True)
+                if 'band' in warped_2d.dims:
+                    warped_2d = warped_2d.squeeze('band', drop=True)
+                aligned_slices.append(warped_2d)
+
+            combined_da = xr.concat(aligned_slices, dim=z_dim)
+            combined_da.name = var_name
+            combined_da = combined_da.assign_coords(full_meta_coords)
+            combined_da = combined_da.rio.clip_box(*target_bounds)
+            
+            with tracker.track_strain(f"Dask Materialization ({var_name})"):
+                combined_da = combined_da.load()
+                
+            # ==========================================
+            # THE DISK SPILL 
+            # ==========================================
+            log_execution(logger, f"  -> Spilling {var_name} to nested directory cache...", logging.INFO)
+            
+            # --- CRS RE-ASSERTION BLOCK (CF CONVENTION) ---
+            # xarray operations (concat, clip, load) frequently strip CF-compliant metadata.
+            # Here we utilize rioxarray's native CF convention enforcer to rebuild the 
+            # spatial_ref coordinate, grid_mapping, and GeoTransform arrays that QGIS requires.
+
+            # Ensure dimensions are recognized as spatial
+            combined_da = combined_da.rio.set_spatial_dims(x_dim="x", y_dim="y")
+            
+            # Write the CRS strictly using the CF Convention
+            combined_da = combined_da.rio.write_crs(
+                target_crs, 
+                convention=Convention.CF
+            )
+            
+            # Explicitly write the GeoTransform matrix (Critical for NetCDF in QGIS)
+            combined_da = combined_da.rio.write_transform(convention=Convention.CF)
+            
+            # Fallback root attributes for non-CF compliant parsers
+            combined_da.attrs['crs'] = str(target_crs)
+            combined_da.attrs['res'] = float(target_res)
+
+            level_dir = os.path.join(base_dir, cube_name, dataset_name, level)
+            os.makedirs(level_dir, exist_ok=True)
+            
+            export_ds = combined_da.to_dataset(name=var_name)
+            
+            if export_format == 'zarr':
+                var_cache_path = os.path.join(level_dir, f"{var_name}.zarr")
+                export_ds.to_zarr(var_cache_path, mode='w')
+            else:
+                var_cache_path = os.path.join(level_dir, f"{var_name}.nc")
+                export_ds.to_netcdf(var_cache_path, format="NETCDF4")
+            
+            level_reprojected_paths[level][var_name] = var_cache_path
+            
+            xr.backends.file_manager.FILE_CACHE.clear()
+            del raw_fetched_data
+            del da_list
+            del snapped_list
+            del aligned_slices
+            del combined_da
+            del export_ds
+            import gc
+            gc.collect()
+
+            cooldown_seconds = 30
+            log_execution(logger, f"  -> Network cooldown: Sleeping for {cooldown_seconds}s...", logging.INFO)
+            import time
+            time.sleep(cooldown_seconds)
+
+            tracker.log_usage(f"END Processing {var_name}")
+
+        # ==========================================
+        # 5. Pipeline Finalization 
+        # ==========================================
+        log_execution(logger, "\nValidating Generated Data Cube...", logging.INFO)
+        
+        total_files = 0
+        for level, variables in level_reprojected_paths.items():
+            if not variables: continue
+            log_execution(logger, f"  -> Level '{level}' successfully generated {len(variables)} independent variable files.", logging.INFO)
+            total_files += len(variables)
+            
+        log_execution(logger, f"=== Data Cube Generation Complete ({total_files} files written to disk) ===", logging.INFO)
+        
+        return level_reprojected_paths
