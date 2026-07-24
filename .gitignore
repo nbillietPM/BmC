@@ -9,6 +9,7 @@ scripts/dev_notebooks/
 *.zip
 *.pyc
 *.env
+*.parquet
 .ipynb_checkpoints/
 __pycache__/
 
