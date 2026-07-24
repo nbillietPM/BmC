@@ -1,10 +1,8 @@
 base_dir: "./test_outputs/"
 cube_name: "dev_cube"
 
-export:
-  as_tree: true
-  as_nested_dir: true 
-
+export_as:
+  format: netcdf
 # ======================================================================
 # 1. SPATIAL & TEMPORAL SELECTION
 # ======================================================================
@@ -23,11 +21,42 @@ temporal:
   start_month: 1
   end_year: 2019
   end_month: 2
+  time_aggregation: "monthly"
 
 # ======================================================================
 # 2. DATA SOURCES
 # ======================================================================
 sources:
+  gbif:
+    # return the non cubed point data with a threshold uncertainty value
+    # if set to false, the sql query automatically resorts to matching with the grid specs of the recipe
+    # EEA will be matched with EEA grid, WSG84 & Global_EqualArea are matched to the DSMG grid
+    return_raw: 
+      enabled: false 
+      coordinateUncertainty: 1000
+    query_filters:
+      # General taxonKey parser, accepts keys from all taxonomic levels
+      taxon_keys: []
+      # Fetcha all occurrence data in AOI     
+      fetch_all_taxa: false
+      # Options: "presence", "absence", or "mixed" (both)
+      record_type: "presence"
+      # If left blank, this defaults to matching the spatial.target_resolution (in meters)
+      default_Uncertainty:  
+      exclude_issues:
+        - "ZERO_COORDINATE"
+        - "COORDINATE_OUT_OF_RANGE"
+        - "COUNTRY_COORDINATE_MISMATCH" 
+    taxonomy:
+      # Include multiple taxonomic identifiers up to lowest level. Species is always included
+      # Smallest can be kingdom (kingdom, phylum, class, order, family, genus)
+      # If the field is left empty the species key will be the only identifier in the end table
+      lowest_level: 
+    columns : []
+    aggregate:
+      return_count: true
+      return_nmbObservers: false
+
   # --------------------------------------------------------------------
   # WEkEO DATASETS (Copernicus Land Monitoring Service)
   # --------------------------------------------------------------------
